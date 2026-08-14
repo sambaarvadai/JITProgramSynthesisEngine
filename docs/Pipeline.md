@@ -1,4 +1,4 @@
-# Pipeline Architecture Overview
+# Pipeline Features Overview
 
 ## What's Well Covered
 
