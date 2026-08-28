@@ -1,4 +1,4 @@
-# ProgramSynthesisEngine
+# JITProgramSynthesisEngine
 
 An intent-native pipeline execution engine. Describe a workflow in plain English — the engine plans it, compiles it to an executable graph, and runs it against real data.
 
