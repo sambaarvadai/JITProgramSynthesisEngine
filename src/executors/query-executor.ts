@@ -84,6 +84,10 @@ export class QueryExecutor {
       for (const join of intent.joins) {
         const alias = join.alias || join.table;
         tableAliases.set(join.table, alias);
+        // Also add the alias itself as a key so we can look it up when filters use aliases
+        if (join.alias) {
+          tableAliases.set(join.alias, join.alias);
+        }
       }
     }
     

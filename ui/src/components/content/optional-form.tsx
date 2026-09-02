@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useConversationStore } from '@/store/conversation'
 import { useExecutionStore } from '@/store/execution'
 import { Button } from '@/components/ui/button'
@@ -92,6 +92,7 @@ export function OptionalForm() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [confirmed, setConfirmed] = useState(false)
   const [validationError, setValidationError] = useState<string | null>(null)
+  const hasAutoExecutedRef = useRef(false)
 
   // Initialize form values
   useEffect(() => {
@@ -167,7 +168,8 @@ export function OptionalForm() {
   // Handle auto-execute in a separate effect that only runs when the condition is definitively met
   useEffect(() => {
     if (!pendingConfirmation || !currentPlan || confirmed) return
-    if (canAutoExecute) {
+    if (canAutoExecute && !hasAutoExecutedRef.current) {
+      hasAutoExecutedRef.current = true
       setConfirmed(true)
       executeNow({})
     }
@@ -177,6 +179,7 @@ export function OptionalForm() {
   useEffect(() => {
     if (!pendingConfirmation) {
       setConfirmed(false)
+      hasAutoExecutedRef.current = false
     }
   }, [pendingConfirmation])
 

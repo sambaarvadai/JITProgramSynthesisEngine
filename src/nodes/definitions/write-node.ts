@@ -106,7 +106,6 @@ export function createWriteNodeDefinition(
 
     // ── Execution ─────────────────────────────────────────────────────────────
     async execute(payload: WritePayload, input: DataValue, _ctx): Promise<DataValue> {
-      console.log(`[WriteNode] Starting execution for table: ${payload.table}, mode: ${payload.mode}, datasource: ${payload.datasource}`);
 
       // Resolve valueRef in staticValues from upstream outputs
       if (payload.staticValues) {
@@ -139,10 +138,6 @@ export function createWriteNodeDefinition(
               
               // Replace valueRef with actual value
               payload.staticValues[key] = values[0];
-              
-              console.log(
-                `[WriteNode] Resolved valueRef "${ref}": ${values[0]}`
-              );
             }
           }
         }
@@ -168,7 +163,6 @@ export function createWriteNodeDefinition(
         const blocked = getBlockedOnUpdate(classifications);
         
         if (blocked.length > 0) {
-          console.log(`[WriteNode] Stripping immutable columns from UPDATE: ${blocked.join(', ')}`);
           for (const col of blocked) {
             if (payload.staticValues) {
               delete payload.staticValues[col];
@@ -183,10 +177,6 @@ export function createWriteNodeDefinition(
         const hasSoftDelete = tableColumns?.has('deleted_at');
         
         if (hasSoftDelete) {
-          console.log(
-            `[WriteNode] Soft delete: rewriting DELETE on ` +
-            `${payload.table} to UPDATE SET deleted_at = NOW()` 
-          );
           
           payload.mode = 'update';
           payload.staticValues = payload.staticValues ?? {};
@@ -206,7 +196,6 @@ export function createWriteNodeDefinition(
 
       // Normalise input to a flat row array
       let inputRows = extractRows(input)
-      console.log(`[WriteNode] Extracted ${inputRows.length} rows from input`);
 
       // FK validation for INSERT and UPDATE modes
       // Only validate FK existence for INSERT and UPDATE
@@ -237,7 +226,6 @@ export function createWriteNodeDefinition(
       if (isEmptyInput && payload.whereColumns && payload.whereColumns.length > 0) {
         const cursor = sessionCursorStore?.get();
         if (cursor) {
-          console.log(`[WriteNode] Using cursor-driven WHERE for ${payload.mode} on ${payload.table}`);
 
           if (sessionCursorStore?.isExpired()) {
             throw new Error(
@@ -247,12 +235,6 @@ export function createWriteNodeDefinition(
           }
 
           const whereResult = buildWhereFromCursor(cursor, 1);
-          console.log(
-            `[WriteNode] Cursor-driven ${payload.mode}: ` +
-            `table=${cursor.table}, ` +
-            `rows=${cursor.rowCount}, ` +
-            `clause=${whereResult.clause}`
-          );
 
           // Build SET clause for UPDATE mode
           if (payload.mode === 'update') {
@@ -271,22 +253,18 @@ export function createWriteNodeDefinition(
             const sql = `UPDATE "${payload.table}" SET ${setClause} WHERE ${whereResult.clause}`;
             const allParams = [...setParams, ...whereResult.params];
 
-            console.log(`[WriteNode] Cursor-driven UPDATE SQL: ${sql}`);
             await resolvedBackend.rawQuery(sql, allParams);
 
             // Clear cursor after successful execution
             sessionCursorStore?.clear();
-            console.log(`[WriteNode] Cursor consumed and cleared`);
 
             return createWriteSummaryResult(payload.table, payload.mode, cursor.rowCount, undefined, staticValues);
           } else if (payload.mode === 'delete') {
             const sql = `DELETE FROM "${payload.table}" WHERE ${whereResult.clause}`;
-            console.log(`[WriteNode] Cursor-driven DELETE SQL: ${sql}`);
             await resolvedBackend.rawQuery(sql, whereResult.params);
 
             // Clear cursor after successful execution
             sessionCursorStore?.clear();
-            console.log(`[WriteNode] Cursor consumed and cleared`);
 
             return createWriteSummaryResult(payload.table, payload.mode, cursor.rowCount, undefined, undefined);
           } else {
@@ -304,18 +282,12 @@ export function createWriteNodeDefinition(
         // For INSERT mode with static values, proceed even without input rows
         // Some columns may be resolved from staticValues instead of upstream
         if (payload.mode === 'insert' || payload.mode === 'insert_ignore' || payload.mode === 'upsert') {
-          console.log(`[WriteNode] No input rows, but proceeding with INSERT using static values`);
           inputRows = [{}]; // Create a dummy row for processing
         } else {
-          console.log(`[WriteNode] No input rows, returning early`);
           return input
         }
       }
 
-      // Debug: Log what we're working with
-      console.log('[WriteNode] Payload:', JSON.stringify(payload, null, 2))
-      console.log('[WriteNode] Input rows sample:', JSON.stringify(inputRows.slice(0, 2), null, 2))
-      console.log('[WriteNode] Payload whereColumns:', JSON.stringify(payload.whereColumns, null, 2))
 
       // Try CalciteClient if available
       if (calciteClient) {
@@ -337,11 +309,6 @@ export function createWriteNodeDefinition(
             default:
               throw new Error(`Unknown mode: ${payload.mode}`)
           }
-          
-          console.log(`[WriteNode] Calcite SQL: ${compiled.sql}`)
-          console.log(`[WriteNode] paramColumns: ${compiled.paramColumns}`)
-          console.log(`[WriteNode] staticParams: ${JSON.stringify(compiled.staticParams)}`)
-          
           const pool = (backend as any).pool
           let rowsAffected = 0
           
@@ -360,7 +327,6 @@ export function createWriteNodeDefinition(
             })
             const allParams = [...dynamicParams, ...compiled.staticParams]
             const result = await pool.query(compiled.sql, allParams)
-            console.log(`[WriteNode] Calcite ${payload.mode} on ${payload.table}: ${result.rowCount} rows affected`)
 
             const rowsAffected = result.rowCount ?? result.rowsAffected ?? 0;
 
@@ -381,12 +347,9 @@ export function createWriteNodeDefinition(
             // Static params (literals) appended after
             const allParams = [...dynamicParams, ...compiled.staticParams]
             
-            console.log(`[WriteNode] Executing with params:`, allParams)
             const result = await pool.query(compiled.sql, allParams)
             rowsAffected += result.rowCount ?? 0
           }
-          
-          console.log(`[WriteNode] Calcite ${payload.mode} on ${payload.table}: ${rowsAffected} rows affected`)
           
           // Return summary result for UPDATE/DELETE operations
           if (payload.mode === 'update' || payload.mode === 'delete') {
@@ -396,10 +359,7 @@ export function createWriteNodeDefinition(
           return input
           
         } catch (err) {
-          console.warn(
-            `[WriteNode] Calcite failed, falling back to manual SQL:`,
-            (err as Error).message
-          )
+          // Calcite not available, fall through to manual SQL
           // Fall through to existing implementation
         }
       }
@@ -410,7 +370,6 @@ export function createWriteNodeDefinition(
       const fields = stepConfig.fields as Record<string, any>
       
       if (fields) {
-        console.log('WriteNode Debug - stepConfig fields:', JSON.stringify(fields, null, 2))
         
         // Resolve template expressions for each input row
         const resolvedRows = inputRows.map(row => {
@@ -430,8 +389,6 @@ export function createWriteNodeDefinition(
           }
           return resolvedRow
         })
-        
-        console.log('WriteNode Debug - resolvedRows (first 2):', JSON.stringify(resolvedRows.slice(0, 2), null, 2))
 
         // Normalize enum values to lowercase to match CHECK constraints
         const normalizedPayload = normalizeEnumValues(payload, targetSchema)
@@ -444,32 +401,21 @@ export function createWriteNodeDefinition(
         
         if (!effectiveColumns.length && payload.mode !== 'delete') return input
         
-        console.log('WriteNode Debug - final effectiveColumns:', effectiveColumns)
-        console.log('WriteNode Debug - final dataRows (first 2):', JSON.stringify(dataRows.slice(0, 2), null, 2))
-        
         // Execute with resolved data
         const batchSize = payload.batchSize ?? 100
-        console.log(`[WriteNode] Executing ${payload.mode} with ${dataRows.length} rows, ${effectiveColumns.length} columns, batchSize: ${batchSize}`);
         
         try {
           switch (payload.mode) {
             case 'insert':
-              console.log(`[WriteNode] Running INSERT on ${payload.table}`);
               await runInsert(resolvedBackend, payload.table, effectiveColumns, dataRows, false, batchSize, payload.returning, payload.staticValues)
-              console.log(`[WriteNode] INSERT completed successfully`);
               break
             case 'insert_ignore':
-              console.log(`[WriteNode] Running INSERT IGNORE on ${payload.table}`);
               await runInsert(resolvedBackend, payload.table, effectiveColumns, dataRows, true, batchSize, payload.returning, payload.staticValues)
-              console.log(`[WriteNode] INSERT IGNORE completed successfully`);
               break
             case 'update':
-              console.log(`[WriteNode] Running UPDATE on ${payload.table}`);
               await runUpdate(resolvedBackend, payload.table, effectiveColumns, dataRows, payload.whereColumns!, payload.returning, payload)
-              console.log(`[WriteNode] UPDATE completed successfully`);
               break
             case 'upsert':
-              console.log(`[WriteNode] Running UPSERT on ${payload.table}`);
               await runUpsert(
                 resolvedBackend,
                 payload.table,
@@ -479,41 +425,47 @@ export function createWriteNodeDefinition(
                 payload.updateColumns,
                 payload.returning,
               )
-              console.log(`[WriteNode] UPSERT completed successfully`);
               break
             case 'delete':
-              console.log(`[WriteNode] Running DELETE on ${payload.table}`);
               await runDelete(resolvedBackend, payload.table, dataRows, payload.whereColumns!, payload.returning)
-              console.log(`[WriteNode] DELETE completed successfully`);
               break
             default:
               throw new Error(`WriteNode: unknown mode '${(payload as any).mode}'`)
           }
         } catch (error) {
-          console.error(`[WriteNode] Database operation failed:`, (error as Error).message);
-          console.error(`[WriteNode] Error details:`, {
-            table: payload.table,
-            mode: payload.mode,
-            columns: effectiveColumns,
-            rowCount: dataRows.length,
-            firstRow: dataRows[0]
-          });
           throw error;
         }
         
         // For UPDATE/DELETE operations, return summary result instead of input rows
-          console.log(`[WriteNode] Template execution returning summary for ${payload.mode}`);
           return createWriteSummaryResult(payload.table, payload.mode, 0, payload.staticWhere, payload.staticValues)
         }
         
         // Normalize enum values to lowercase to match CHECK constraints
         const normalizedPayload = normalizeEnumValues(payload, targetSchema)
 
+        // Merge user-submitted form values from stepConfig.fields into staticValues
+        // This ensures that form-submitted values override upstream row values
+        const formFields = stepConfig.fields as Record<string, any>
+        if (formFields && Object.keys(formFields).length > 0) {
+          // Merge form values into staticValues, prioritizing form values
+          for (const [key, value] of Object.entries(formFields)) {
+            // Skip template expressions (they're handled in the template path above)
+            if (typeof value === 'string' && value.startsWith('{{') && value.endsWith('}}')) {
+              continue
+            }
+            // Skip if it's a special SQL expression
+            if (value === 'NOW()' || value === 'now()') {
+              continue
+            }
+            // Merge literal values into staticValues
+            if (!normalizedPayload.staticValues) normalizedPayload.staticValues = {}
+            normalizedPayload.staticValues[key] = value
+          }
+        }
+
         // Fallback to original logic for non-template cases
-        console.log(`[WriteNode] Using fallback execution path (no template fields)`);
         // Validate and normalise columns present in actual rows
         const { dataRows, effectiveColumns, dynamicColumns } = prepareRows(inputRows, normalizedPayload)
-        console.log(`[WriteNode] Fallback - effectiveColumns: ${effectiveColumns.length}, dynamicColumns: ${dynamicColumns.length}, dataRows: ${dataRows.length}`);
 
         // Row-driven bulk UPDATE path
         // Fires when whereColumns specifies which upstream field to use as WHERE
@@ -539,10 +491,6 @@ export function createWriteNodeDefinition(
           );
         }
 
-        console.log(
-          `[WriteNode] Row-driven bulk UPDATE: ` +
-          `${whereValues.length} rows via "${whereCol}" = ANY(...)`
-        );
 
         // Build SET clause from staticValues
         const SQL_EXPRESSIONS = new Set([
@@ -577,15 +525,7 @@ export function createWriteNodeDefinition(
 
         const params = [...setParams, whereValues];
 
-        console.log(`[WriteNode] Row-driven UPDATE SQL: ${sql}`);
-        console.log(
-          `[WriteNode] Row-driven UPDATE params: ` +
-          `[${setParams.map(p => JSON.stringify(p)).join(', ')}, ` +
-          `[${whereValues.length} ids]]`
-        );
-
         const result = await resolvedBackend.rawQuery(sql, params);
-        console.log(`[WriteNode] ${result.rowCount} rows affected`);
 
         // Return summary in same shape as other paths
         const filteredStaticValues = Object.fromEntries(
@@ -610,39 +550,32 @@ export function createWriteNodeDefinition(
                          Object.keys(payload.staticWhere ?? {}).length > 0
 
         if (!hasStaticSets && !hasDynamicSets) {
-          console.warn('[WriteNode] UPDATE has no SET values, skipping')
           return input
         }
         if (!hasWhere) {
-          console.warn('[WriteNode] UPDATE has no WHERE clause, refusing to execute')
           return input
         }
         // Has values and WHERE - proceed even if dynamicColumns is empty
       } else if (!effectiveColumns.length && payload.mode !== 'delete' && !payload.staticValues) {
         // Only return early if there are no effective columns AND no static values
-        console.log(`[WriteNode] No effective columns and no static values, returning early`);
         return input
       }
 
       const batchSize = payload.batchSize ?? 100
-      console.log(`[WriteNode] Fallback executing ${payload.mode} with ${dataRows.length} rows`);
 
       let rowsAffected = 0; // Track actual rows affected for summary
 
       try {
         switch (payload.mode) {
           case 'insert':
-            console.log(`[WriteNode] Fallback running INSERT on ${payload.table}`);
             await runInsert(resolvedBackend, payload.table, dynamicColumns, dataRows, false, batchSize, payload.returning, payload.staticValues)
             break
 
           case 'insert_ignore':
-            console.log(`[WriteNode] Fallback running INSERT IGNORE on ${payload.table}`);
             await runInsert(resolvedBackend, payload.table, dynamicColumns, dataRows, true, batchSize, payload.returning, payload.staticValues)
             break
 
           case 'update':
-            console.log(`[WriteNode] Fallback running UPDATE on ${payload.table}`);
 
             // Handle pure-static UPDATE (no dynamic columns, only staticValues)
             if (dynamicColumns.length === 0 && Object.keys(payload.staticValues ?? {}).length > 0) {
@@ -668,13 +601,11 @@ export function createWriteNodeDefinition(
               for (const col of payload.columns) {
                 const val = dataRow[col];  // dataRow is the merged row from prepareRows
                 if (val === undefined) {
-                  console.log(`[WriteNode] Dropping dynamic column '${col}' - not resolvable`);
                   continue;
                 }
                 setClauses.push(`"${col}" = $${paramIndex}`);
                 setParams.push(val);
                 paramIndex++;
-                console.log(`[WriteNode] Added dynamic column '${col}': ${val}`);
               }
 
               // 2. Static values — literal values from staticValues
@@ -690,12 +621,10 @@ export function createWriteNodeDefinition(
                 if (typeof val === 'string' && SQL_EXPRESSIONS.has(val.trim())) {
                   setClauses.push(`"${col}" = ${val.trim()}`);
                   // no param push — SQL expression embedded directly
-                  console.log(`[WriteNode] Added static column '${col}' as SQL expression: ${val.trim()}`);
                 } else {
                   setClauses.push(`"${col}" = $${paramIndex}`);
                   setParams.push(val);
                   paramIndex++;
-                  console.log(`[WriteNode] Added static column '${col}': ${val}`);
                 }
               }
 
@@ -712,12 +641,8 @@ export function createWriteNodeDefinition(
 
               const params = [...setParams, ...(whereResult?.params ?? [])];
 
-              console.log(`[WriteNode] Bulk UPDATE SQL: ${sql}`);
-              console.log(`[WriteNode] Bulk UPDATE params: ${JSON.stringify(params)}`);
-
               const result = await resolvedBackend.rawQuery(sql, params);
               rowsAffected = result.rowCount ?? 0;
-              console.log(`[WriteNode] ${result.rowCount} rows affected`);
             } else {
               // Standard UPDATE with dynamic columns
               await runUpdate(resolvedBackend, payload.table, effectiveColumns, dataRows, payload.whereColumns!, payload.returning, payload)
@@ -725,7 +650,6 @@ export function createWriteNodeDefinition(
             break
 
           case 'upsert':
-            console.log(`[WriteNode] Fallback running UPSERT on ${payload.table}`);
             await runUpsert(
               resolvedBackend,
               payload.table,
@@ -738,27 +662,22 @@ export function createWriteNodeDefinition(
             break
 
           case 'delete':
-            console.log(`[WriteNode] Fallback running DELETE on ${payload.table}`);
             await runDelete(resolvedBackend, payload.table, dataRows, payload.whereColumns!, payload.returning)
             break
 
           default:
             throw new Error(`WriteNode: unknown mode '${(payload as any).mode}'`)
         }
-        console.log(`[WriteNode] Fallback execution completed successfully`);
       } catch (error) {
-        console.error(`[WriteNode] Fallback execution failed:`, (error as Error).message);
         throw error;
       }
 
       // For UPDATE/DELETE operations, return summary result instead of input rows
       if (payload.mode === 'update' || payload.mode === 'delete') {
-        console.log(`[WriteNode] Fallback returning summary for ${payload.mode}`);
         return createWriteSummaryResult(payload.table, payload.mode, rowsAffected, payload.staticWhere, payload.staticValues)
       }
       
       // Pass input through unchanged for INSERT operations - downstream nodes see what was written
-      console.log(`[WriteNode] Fallback returning input`);
       return input
     },
   }
@@ -769,8 +688,30 @@ export function createWriteNodeDefinition(
 function extractRows(input: DataValue | undefined | null): Row[] {
   if (input == null) return []          // null/undefined guard
   if (input.kind === 'void') return []
-  if (input.kind === 'tabular')  return input.data.rows as Row[]
-  if (input.kind === 'record')   return [input.data as Row]
+  if (input.kind === 'tabular') {
+    const rows = input.data.rows as Row[]
+    // Filter out numeric keys from each row (frontend sends arrays as objects with numeric keys)
+    const filteredRows = rows.map(row => {
+      const filteredRow: Row = {}
+      for (const [key, value] of Object.entries(row)) {
+        // Skip numeric keys
+        if (/^\d+$/.test(key)) continue
+        filteredRow[key] = value
+      }
+      return filteredRow
+    })
+    return filteredRows
+  }
+  if (input.kind === 'record') {
+    const row = input.data as Row
+    const filteredRow: Row = {}
+    for (const [key, value] of Object.entries(row)) {
+      // Skip numeric keys
+      if (/^\d+$/.test(key)) continue
+      filteredRow[key] = value
+    }
+    return [filteredRow]
+  }
   if (input.kind === 'collection') {
     return input.data.flatMap(item => extractRows(item))
   }
@@ -896,39 +837,31 @@ function prepareRows(
   inputRows: Row[],
   payload: WritePayload,
 ): { dataRows: Row[]; effectiveColumns: string[]; dynamicColumns: string[] } {
-  console.debug(`[WriteNode] prepareRows called for table: ${payload.table}, mode: ${payload.mode}`);
-  console.debug(`[WriteNode] prepareRows - input rows: ${inputRows.length}, payload columns: ${payload.columns?.length || 0}`);
-  
   if (payload.mode === 'delete') {
-    console.debug(`[WriteNode] prepareRows - delete mode, returning input rows`);
     return { dataRows: inputRows, effectiveColumns: [], dynamicColumns: [] }
   }
 
+  // Filter out numeric keys from columns (frontend sends arrays as objects with numeric keys)
+  const filteredColumns = payload.columns.filter(col => !/^\d+$/.test(col));
+
   const firstRow = inputRows[0]
-  console.debug(`[WriteNode] prepareRows - first row keys:`, Object.keys(firstRow));
-  console.debug(`[WriteNode] prepareRows - staticValues:`, payload.staticValues);
-  console.debug(`[WriteNode] prepareRows - columnAliases:`, payload.columnAliases);
-  
+
   // Calculate effectiveColumns using the same resolution logic as row building
-  const effectiveColumns = payload.columns.filter(col => {
+  const effectiveColumns = filteredColumns.filter(col => {
     // Check columnAliases for FK-based resolution before dropping
     if (payload.columnAliases?.[col]) {
       const sourceField = payload.columnAliases[col]
       const value = firstRow[sourceField]
       if (value !== undefined && value !== null) {
-        console.log(`[WriteNode] Resolved column '${col}' via FK alias: ${col} ← ${sourceField}`)
         return true
       }
     }
-    
+
     const value = getColumnValue(col, firstRow, payload.staticValues, payload.columnAliases, true)
     if (value !== undefined) return true
 
-    console.warn(`[WriteNode] Dropping column '${col}' - not resolvable`)
     return false
   })
-  
-  console.debug(`[WriteNode] prepareRows - effectiveColumns: ${effectiveColumns.length}: [${effectiveColumns.join(', ')}]`);
 
   // Helper to resolve special values like NOW()
   const resolveValue = (val: unknown): unknown => {
@@ -941,34 +874,24 @@ function prepareRows(
     const mergedRow: Row = {}
 
     // Resolve each column through the proper hierarchy
-    for (const col of payload.columns) {
+    for (const col of filteredColumns) {
       const value = getColumnValue(col, row, payload.staticValues, payload.columnAliases, true)
       if (value !== undefined) {
         mergedRow[col] = resolveValue(value)
       }
     }
-    
-    if (index === 0) {
-      console.debug(`[WriteNode] Input rows sample:`, JSON.stringify(inputRows.slice(0, 2), null, 2))
-      console.debug(`[WriteNode] Payload whereColumns:`, JSON.stringify(payload.whereColumns, null, 2))
-      console.debug(`[WriteNode] prepareRows - sample merged row:`, mergedRow);
-    }
+
     return mergedRow;
   })
 
   // Calculate dynamic columns (those not in staticValues AND have values in data rows)
   const staticKeys = new Set(Object.keys(payload.staticValues ?? {}))
-  const dynamicColumns = payload.columns.filter(col => {
+  const dynamicColumns = filteredColumns.filter(col => {
     if (staticKeys.has(col)) return false
     // Only include if at least one row has a value for this column
     return dataRows.some(row => row[col] !== undefined)
   })
 
-  console.debug(`[WriteNode] prepareRows - staticValues:`, payload.staticValues);
-  console.debug(`[WriteNode] prepareRows - staticKeys: [${Array.from(staticKeys).join(', ')}]`);
-  console.debug(`[WriteNode] prepareRows - original columns: [${payload.columns.join(', ')}]`);
-  console.debug(`[WriteNode] prepareRows - dynamicColumns: [${dynamicColumns.join(', ')}]`);
-  console.debug(`[WriteNode] prepareRows - returning ${dataRows.length} dataRows`);
   return { dataRows, effectiveColumns, dynamicColumns }
 }
 
@@ -996,36 +919,36 @@ async function runInsert(
   returning?: string[],
   staticValues?: Record<string, any>,
 ): Promise<void> {
-  // Merge static values into the column list for the INSERT statement
-  const allColumns = staticValues ? [...new Set([...columns, ...Object.keys(staticValues)])] : columns
-  const colList = allColumns.map(qi).join(', ')
-  const onConflict = ignoreConflict ? ' ON CONFLICT DO NOTHING' : ''
-  const returningClause = returning?.length ? ` RETURNING ${returning.map(qi).join(', ')}` : ''
+  // Use explicit transaction to ensure commit
+  return backend.transaction(async () => {
+    // Merge static values into the column list for the INSERT statement
+    const allColumns = staticValues ? [...new Set([...columns, ...Object.keys(staticValues)])] : columns
+    const colList = allColumns.map(qi).join(', ')
+    const onConflict = ignoreConflict ? ' ON CONFLICT DO NOTHING' : ''
+    const returningClause = returning?.length ? ` RETURNING ${returning.map(qi).join(', ')}` : ''
 
-  console.log(`[WriteNode] runInsert - columns: [${columns.join(', ')}], staticValues:`, staticValues);
-  console.log(`[WriteNode] runInsert - allColumns: [${allColumns.join(', ')}]`);
+    // Process in batches to stay within Postgres parameter limits (~65k)
+    for (let i = 0; i < rows.length; i += batchSize) {
+      const batch = rows.slice(i, i + batchSize)
 
-  // Process in batches to stay within Postgres parameter limits (~65k)
-  for (let i = 0; i < rows.length; i += batchSize) {
-    const batch = rows.slice(i, i + batchSize)
+      const rowPlaceholders = batch.map((_, rowIdx) =>
+        `(${placeholders(allColumns.length, rowIdx * allColumns.length)})`
+      ).join(', ')
 
-    const rowPlaceholders = batch.map((_, rowIdx) =>
-      `(${placeholders(allColumns.length, rowIdx * allColumns.length)})`
-    ).join(', ')
+      const values = batch.flatMap(row => 
+        allColumns.map(col => {
+          // If it's a static value, use that; otherwise use the row value
+          if (staticValues && col in staticValues) {
+            return staticValues[col]
+          }
+          return row[col]
+        })
+      )
 
-    const values = batch.flatMap(row => 
-      allColumns.map(col => {
-        // If it's a static value, use that; otherwise use the row value
-        if (staticValues && col in staticValues) {
-          return staticValues[col]
-        }
-        return row[col]
-      })
-    )
-
-    const sql = `INSERT INTO ${qi(table)} (${colList}) VALUES ${rowPlaceholders}${onConflict}${returningClause}`
-    await backend.rawQuery(sql, values)
-  }
+      const sql = `INSERT INTO ${qi(table)} (${colList}) VALUES ${rowPlaceholders}${onConflict}${returningClause}`
+      await backend.rawQuery(sql, values)
+    }
+  });
 }
 
 // ─── UPDATE ──────────────────────────────────────────────────────────────────
@@ -1039,70 +962,73 @@ async function runUpdate(
   returning?: string[],
   payload?: WritePayload
 ): Promise<void> {
-  // Validate whereColumns are in the rows
-  const firstRow = rows[0]
-  const missingWhere = whereColumns.filter(c => !(c in firstRow))
-  if (missingWhere.length) {
-    throw new Error(
-      `WriteNode UPDATE [${table}]: whereColumns not in input rows: ${missingWhere.join(', ')}. ` +
-      `Available: ${Object.keys(firstRow).join(', ')}`,
-    )
-  }
+  // Use explicit transaction to ensure commit
+  return backend.transaction(async () => {
+    // Validate whereColumns are in the rows
+    const firstRow = rows[0]
+    const missingWhere = whereColumns.filter(c => !(c in firstRow))
+    if (missingWhere.length) {
+      throw new Error(
+        `WriteNode UPDATE [${table}]: whereColumns not in input rows: ${missingWhere.join(', ')}. ` +
+        `Available: ${Object.keys(firstRow).join(', ')}`,
+      )
+    }
 
-  // Exclude whereColumns from SET clause (they identify the row, not update it)
-  const actualSetCols = setColumns.filter(c => !whereColumns.includes(c))
-  if (!actualSetCols.length) {
-    throw new Error(
-      `WriteNode UPDATE [${table}]: all columns are whereColumns — nothing to SET. ` +
-      `Add non-where columns to the columns list.`,
-    )
-  }
+    // Exclude whereColumns from SET clause (they identify the row, not update it)
+    const actualSetCols = setColumns.filter(c => !whereColumns.includes(c))
+    if (!actualSetCols.length) {
+      throw new Error(
+        `WriteNode UPDATE [${table}]: all columns are whereColumns — nothing to SET. ` +
+        `Add non-where columns to the columns list.`,
+      )
+    }
 
-  const returningClause = returning?.length ? ` RETURNING ${returning.map(qi).join(', ')}` : ''
+    const returningClause = returning?.length ? ` RETURNING ${returning.map(qi).join(', ')}` : ''
 
-  // Build predicate from staticWhere if available
-  const predicate = payload?.wherePredicate
-    ?? buildWritePredicate(payload?.staticWhere ?? {});
+    // Build predicate from staticWhere if available
+    const predicate = payload?.wherePredicate
+      ?? buildWritePredicate(payload?.staticWhere ?? {});
 
-  if (!predicate && payload?.mode === 'update' && whereColumns.length === 0) {
-    throw new Error(
-      `UPDATE on ${table} refused — no WHERE clause`
-    );
-  }
-
-  // Execute one UPDATE per row (each row may match different WHERE values)
-  for (const row of rows) {
-    const params: unknown[] = []
-
-    const setClause = actualSetCols.map(col => {
-      params.push(row[col])
-      return `${qi(col)} = $${params.length}`
-    }).join(', ')
-
-    // Build WHERE clause using predicateToSQL for static conditions,
-    // or dynamic whereColumns for row-specific conditions
-    let whereClause: string;
-    if (predicate) {
-      // Static WHERE conditions from predicateToSQL
-      const setParamCount = actualSetCols.length;
-      const whereResult = predicateToSQL(predicate, setParamCount + 1);
-      whereClause = whereResult.sql;
-      params.push(...whereResult.params);
-    } else if (whereColumns.length > 0) {
-      // Dynamic WHERE conditions from row values
-      whereClause = whereColumns.map(col => {
-        params.push(row[col])
-        return `${qi(col)} = $${params.length}`
-      }).join(' AND ');
-    } else {
+    if (!predicate && payload?.mode === 'update' && whereColumns.length === 0) {
       throw new Error(
         `UPDATE on ${table} refused — no WHERE clause`
       );
     }
 
-    const sql = `UPDATE ${qi(table)} SET ${setClause} WHERE ${whereClause}${returningClause}`
-    await backend.rawQuery(sql, params)
-  }
+    // Execute one UPDATE per row (each row may match different WHERE values)
+    for (const row of rows) {
+      const params: unknown[] = []
+
+      const setClause = actualSetCols.map(col => {
+        params.push(row[col])
+        return `${qi(col)} = $${params.length}`
+      }).join(', ')
+
+      // Build WHERE clause using predicateToSQL for static conditions,
+      // or dynamic whereColumns for row-specific conditions
+      let whereClause: string;
+      if (predicate) {
+        // Static WHERE conditions from predicateToSQL
+        const setParamCount = actualSetCols.length;
+        const whereResult = predicateToSQL(predicate, setParamCount + 1);
+        whereClause = whereResult.sql;
+        params.push(...whereResult.params);
+      } else if (whereColumns.length > 0) {
+        // Dynamic WHERE conditions from row values
+        whereClause = whereColumns.map(col => {
+          params.push(row[col])
+          return `${qi(col)} = $${params.length}`
+        }).join(' AND ');
+      } else {
+        throw new Error(
+          `UPDATE on ${table} refused — no WHERE clause`
+        );
+      }
+
+      const sql = `UPDATE ${qi(table)} SET ${setClause} WHERE ${whereClause}${returningClause}`
+      await backend.rawQuery(sql, params)
+    }
+  });
 }
 
 // ─── UPSERT ──────────────────────────────────────────────────────────────────
@@ -1116,36 +1042,39 @@ async function runUpsert(
   updateColumns: string[] | undefined,
   returning?: string[],
 ): Promise<void> {
-  // Columns to SET on conflict — defaults to non-conflict columns
-  const setCols = updateColumns ?? columns.filter(c => !conflictColumns.includes(c))
-  if (!setCols.length) {
-    // Nothing to update on conflict — equivalent to insert_ignore
-    await runInsert(backend, table, columns, rows, true, 100, returning, undefined)
-    return
-  }
+  // Use explicit transaction to ensure commit
+  return backend.transaction(async () => {
+    // Columns to SET on conflict — defaults to non-conflict columns
+    const setCols = updateColumns ?? columns.filter(c => !conflictColumns.includes(c))
+    if (!setCols.length) {
+      // Nothing to update on conflict — equivalent to insert_ignore
+      await runInsert(backend, table, columns, rows, true, 100, returning, undefined)
+      return
+    }
 
-  const colList = columns.map(qi).join(', ')
-  const conflictList = conflictColumns.map(qi).join(', ')
-  const returningClause = returning?.length ? ` RETURNING ${returning.map(qi).join(', ')}` : ''
+    const colList = columns.map(qi).join(', ')
+    const conflictList = conflictColumns.map(qi).join(', ')
+    const returningClause = returning?.length ? ` RETURNING ${returning.map(qi).join(', ')}` : ''
 
-  // Execute one UPSERT per row to keep param indexing simple
-  for (const row of rows) {
-    const values = columns.map(col => row[col])
+    // Execute one UPSERT per row to keep param indexing simple
+    for (const row of rows) {
+      const values = columns.map(col => row[col])
 
-    const rowPlaceholders = placeholders(columns.length)
+      const rowPlaceholders = placeholders(columns.length)
 
-    const updateClause = setCols.map(col => {
-      const idx = columns.indexOf(col) + 1
-      return `${qi(col)} = $${idx}`
-    }).join(', ')
+      const updateClause = setCols.map(col => {
+        const idx = columns.indexOf(col) + 1
+        return `${qi(col)} = $${idx}`
+      }).join(', ')
 
-    const sql =
-      `INSERT INTO ${qi(table)} (${colList}) VALUES (${rowPlaceholders}) ` +
-      `ON CONFLICT (${conflictList}) DO UPDATE SET ${updateClause}` +
-      returningClause
+      const sql =
+        `INSERT INTO ${qi(table)} (${colList}) VALUES (${rowPlaceholders}) ` +
+        `ON CONFLICT (${conflictList}) DO UPDATE SET ${updateClause}` +
+        returningClause
 
-    await backend.rawQuery(sql, values)
-  }
+      await backend.rawQuery(sql, values)
+    }
+  });
 }
 
 // ─── DELETE ──────────────────────────────────────────────────────────────────
@@ -1157,39 +1086,42 @@ async function runDelete(
   whereColumns: string[],
   returning?: string[],
 ): Promise<void> {
-  if (!whereColumns.length) {
-    throw new Error(
-      `WriteNode DELETE [${table}]: whereColumns is empty. ` +
-      `Refusing to delete all rows without a WHERE clause.`,
-    )
-  }
+  // Use explicit transaction to ensure commit
+  return backend.transaction(async () => {
+    if (!whereColumns.length) {
+      throw new Error(
+        `WriteNode DELETE [${table}]: whereColumns is empty. ` +
+        `Refusing to delete all rows without a WHERE clause.`,
+      )
+    }
 
-  const firstRow = rows[0]
-  const missingWhere = whereColumns.filter(c => !(c in firstRow))
-  if (missingWhere.length) {
-    throw new Error(
-      `WriteNode DELETE [${table}]: whereColumns not in input rows: ${missingWhere.join(', ')}. ` +
-      `Available: ${Object.keys(firstRow).join(', ')}`,
-    )
-  }
+    const firstRow = rows[0]
+    const missingWhere = whereColumns.filter(c => !(c in firstRow))
+    if (missingWhere.length) {
+      throw new Error(
+        `WriteNode DELETE [${table}]: whereColumns not in input rows: ${missingWhere.join(', ')}. ` +
+        `Available: ${Object.keys(firstRow).join(', ')}`,
+      )
+    }
 
-  const returningClause = returning?.length ? ` RETURNING ${returning.map(qi).join(', ')}` : ''
+    const returningClause = returning?.length ? ` RETURNING ${returning.map(qi).join(', ')}` : ''
 
-  // One DELETE per row to target individual records
-  for (const row of rows) {
-    const params: unknown[] = []
+    // One DELETE per row to target individual records
+    for (const row of rows) {
+      const params: unknown[] = []
 
-    const whereClause = whereColumns.map(col => {
-      const val = row[col]
-      if (val === null || val === undefined) {
-        // IS NULL instead of = NULL
-        return `${qi(col)} IS NULL`
-      }
-      params.push(val)
-      return `${qi(col)} = $${params.length}`
-    }).join(' AND ')
+      const whereClause = whereColumns.map(col => {
+        const val = row[col]
+        if (val === null || val === undefined) {
+          // IS NULL instead of = NULL
+          return `${qi(col)} IS NULL`
+        }
+        params.push(val)
+        return `${qi(col)} = $${params.length}`
+      }).join(' AND ')
 
-    const sql = `DELETE FROM ${qi(table)} WHERE ${whereClause}${returningClause}`
-    await backend.rawQuery(sql, params)
-  }
+      const sql = `DELETE FROM ${qi(table)} WHERE ${whereClause}${returningClause}`
+      await backend.rawQuery(sql, params)
+    }
+  });
 }

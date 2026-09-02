@@ -207,7 +207,7 @@ test('Linear pipeline — Input → Transform → Output', async () => {
   const ctx = buildTestContext();
   const scheduler = buildScheduler();
 
-  const result = await scheduler.execute(graph, ctx);
+  const result = await scheduler.run(graph, ctx);
 
   assert.strictEqual(result.status, 'success');
   assert.ok(result.outputs.has('output'));
@@ -279,7 +279,7 @@ test('Node skip on error policy skip', async () => {
   const events: SchedulerEvent[] = [];
   scheduler.on((event) => events.push(event));
 
-  const result = await scheduler.execute(graph, ctx);
+  const result = await scheduler.run(graph, ctx);
 
   assert.strictEqual(result.status, 'success');
   assert.ok(result.outputs.has('output'));
@@ -348,7 +348,7 @@ test('Node retry on error policy retry', async () => {
   const ctx = buildTestContext();
   const scheduler = buildScheduler();
 
-  const result = await scheduler.execute(graph, ctx);
+  const result = await scheduler.run(graph, ctx);
 
   assert.strictEqual(result.status, 'success');
   
@@ -415,7 +415,7 @@ test('Pipeline fail on error policy fail', async () => {
   const scheduler = buildScheduler();
 
   try {
-    await scheduler.execute(graph, ctx);
+    await scheduler.run(graph, ctx);
     assert.fail('Should have thrown error');
   } catch (error) {
     assert.strictEqual((error as Error).message, 'Mock failure');
@@ -498,7 +498,7 @@ test('Parallel branches', async () => {
   const ctx = buildTestContext();
   const scheduler = buildScheduler();
 
-  const result = await scheduler.execute(graph, ctx);
+  const result = await scheduler.run(graph, ctx);
 
   assert.strictEqual(result.status, 'success');
   assert.ok(result.outputs.has('output'));
@@ -537,7 +537,7 @@ test('Graph validation — unknown node kind', async () => {
   const scheduler = buildScheduler();
 
   try {
-    await scheduler.execute(graph, ctx);
+    await scheduler.run(graph, ctx);
     assert.fail('Should have thrown SchedulerValidationError');
   } catch (error) {
     assert.ok(error instanceof SchedulerValidationError);
@@ -587,7 +587,7 @@ test('Graph validation — cycle detection', async () => {
   const scheduler = buildScheduler();
 
   try {
-    await scheduler.execute(graph, ctx);
+    await scheduler.run(graph, ctx);
     assert.fail('Should have thrown CycleDetectedError or SchedulerValidationError');
   } catch (error) {
     assert.ok(error instanceof CycleDetectedError || error instanceof SchedulerValidationError);
@@ -659,7 +659,7 @@ test('Event emission', async () => {
   const events: SchedulerEvent[] = [];
   scheduler.on((event) => events.push(event));
 
-  const result = await scheduler.execute(graph, ctx);
+  const result = await scheduler.run(graph, ctx);
 
   assert.strictEqual(result.status, 'success');
   
@@ -821,7 +821,7 @@ test('ConditionalNode — true branch taken', async () => {
   const ctx = buildTestContext();
   const scheduler = buildScheduler();
 
-  const result = await scheduler.execute(graph, ctx);
+  const result = await scheduler.run(graph, ctx);
 
   assert.strictEqual(result.status, 'success');
   assert.ok(result.outputs.has('output'));
@@ -972,7 +972,7 @@ test('ConditionalNode — false branch taken', async () => {
   const ctx = buildTestContext();
   const scheduler = buildScheduler();
 
-  const result = await scheduler.execute(graph, ctx);
+  const result = await scheduler.run(graph, ctx);
 
   assert.strictEqual(result.status, 'success');
   assert.ok(result.outputs.has('output'));
@@ -1057,7 +1057,7 @@ test('LoopNode — forEach over RowSet rows', async () => {
   ctx.scope.bindings.set('input', staticData);
   const scheduler = buildScheduler();
 
-  const result = await scheduler.execute(graph, ctx);
+  const result = await scheduler.run(graph, ctx);
 
   assert.strictEqual(result.status, 'success');
   
@@ -1146,7 +1146,7 @@ test('LoopNode — while loop', async () => {
   const ctx = buildTestContext();
   const scheduler = buildScheduler();
 
-  const result = await scheduler.execute(graph, ctx);
+  const result = await scheduler.run(graph, ctx);
 
   assert.strictEqual(result.status, 'success');
   
@@ -1235,7 +1235,7 @@ test('LoopNode — maxIterations hard cap', async () => {
   ctx.scope.bindings.set('input', staticData);
   const scheduler = buildScheduler();
 
-  const result = await scheduler.execute(graph, ctx);
+  const result = await scheduler.run(graph, ctx);
 
   assert.strictEqual(result.status, 'success');
   
@@ -1398,7 +1398,7 @@ test('Nested: ConditionalNode inside LoopNode', async () => {
   ctx.scope.bindings.set('input', staticData);
   const scheduler = buildScheduler();
 
-  const result = await scheduler.execute(graph, ctx);
+  const result = await scheduler.run(graph, ctx);
 
   assert.strictEqual(result.status, 'success');
   
@@ -1515,7 +1515,7 @@ test('LoopNode — scope isolation between iterations', async () => {
   ctx.scope.bindings.set('input', staticData);
   const scheduler = buildScheduler();
 
-  const result = await scheduler.execute(graph, ctx);
+  const result = await scheduler.run(graph, ctx);
 
   assert.strictEqual(result.status, 'success');
   

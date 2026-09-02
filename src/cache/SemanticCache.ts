@@ -87,9 +87,7 @@ export class SemanticCache {
   // ── LOOKUP ─────────────────────────────────────────────────
 
   async lookup(nlInput: string): Promise<CacheHit | null> {
-    console.debug('[SemanticCache] Lookup called for:', nlInput);
     if (!this.config.enabled) {
-      console.debug('[SemanticCache] Cache disabled');
       return null;
     }
 
@@ -97,7 +95,6 @@ export class SemanticCache {
       // Embed the query
       const embedding = await this.voyage.embed(nlInput);
       const vectorStr = `[${embedding.join(',')}]`;
-      console.debug('[SemanticCache] Embedding generated, searching...');
 
       // Cosine similarity search — pgvector operator <=>
       // Filter by source_type to prevent cross-source contamination
@@ -120,25 +117,17 @@ export class SemanticCache {
       );
 
       if (result.rows.length === 0) {
-        console.debug('[SemanticCache] No results found');
         return null;
       }
 
       const row = result.rows[0];
       const similarity = parseFloat(row.similarity);
-      console.debug('[SemanticCache] Found result, similarity:', similarity);
-
-      console.debug(
-        `[SemanticCache] Best match similarity: ${similarity.toFixed(4)} ` +
-        `(threshold: ${this.config.threshold})`
-      );
 
       if (similarity < this.config.threshold) return null;
 
       const planJson = row.plan_json;
       if (!planJson) {
         // Old cache entry without plan_json — treat as miss
-        console.debug('[SemanticCache] Entry has no plan_json — treating as miss');
         return null;
       }
 
@@ -152,11 +141,6 @@ export class SemanticCache {
                updated_at = NOW()
            WHERE id = $1`,
         [row.id]
-      );
-
-      console.log(
-        `[SemanticCache] Cache HIT — similarity: ${similarity.toFixed(4)}, ` +
-        `hits: ${row.hit_count + 1}`
       );
 
       return {
@@ -194,9 +178,6 @@ export class SemanticCache {
       const planToStore = { ...plan, graph: strippedGraph };
       const serialized = serializePlan(planToStore);
 
-      console.debug('[SemanticCache] Serialized plan size:', JSON.stringify(serialized).length);
-      console.debug('[SemanticCache] plan_json will be stored');
-
       const result = await this.pool.query(
         `INSERT INTO pee_semantic_cache (
             nl_input, nl_embedding, intent_json, plan_json,
@@ -212,11 +193,6 @@ export class SemanticCache {
           sourcesTouched,
           this.config.sourceType
         ]
-      );
-
-      console.log(
-        `[SemanticCache] Stored: "${nlInput.slice(0, 50)}" ` +
-        `→ sources [${sourcesTouched.join(', ')}] (row count: ${result.rowCount})`
       );
 
     } catch (e) {
@@ -249,12 +225,6 @@ export class SemanticCache {
       );
 
       const count = result.rowCount ?? 0;
-      if (count > 0) {
-        console.log(
-          `[SemanticCache] Invalidated ${count} entries ` +
-          `touching sources: [${sources.join(', ')}] — ${reason}`
-        );
-      }
       return count;
 
     } catch (e) {
@@ -277,9 +247,6 @@ export class SemanticCache {
         [reason, this.config.workspaceId, this.config.sourceType]
       );
       const count = result.rowCount ?? 0;
-      console.log(
-        `[SemanticCache] Invalidated ALL ${count} cache entries — ${reason}`
-      );
       return count;
     } catch (e) {
       console.warn('[SemanticCache] Full invalidation failed:', e);

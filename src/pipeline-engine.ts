@@ -64,6 +64,7 @@ export type PipelineEngineConfig = {
   anthropicApiKey: string;
   postgresUrl?: string;
   schema?: SchemaConfig;
+  builtSchema?: BuiltSchema; // Full schema with traits for auto-injected field filtering
   storageBackend?: StorageBackend;
   budget?: Partial<ExecutionBudget>;
   maxParallelBranches?: number;
@@ -85,6 +86,145 @@ export type RunResult = {
   execution: ExecutionResult;
   durationMs: number;
 };
+
+// Field State Management Types
+export enum FieldState {
+  RESOLVED = 'RESOLVED',
+  PENDING = 'PENDING',
+  AUTO_INJECTED = 'AUTO_INJECTED',
+  USER_REQUIRED = 'USER_REQUIRED',
+  DERIVED = 'DERIVED',
+}
+
+export enum FieldSource {
+  LLM = 'LLM',
+  ORIGINAL = 'ORIGINAL',
+  AUTO_INJECTED = 'AUTO_INJECTED',
+  UPSTREAM = 'UPSTREAM',
+  DEFAULT = 'DEFAULT',
+  SESSION = 'SESSION',
+}
+
+export interface FieldInfo {
+  name: string;
+  canonicalName: string;
+  state: FieldState;
+  source: FieldSource;
+  resolvedValue?: any;
+  isReadOnly?: boolean;
+  dependencies?: string[];
+  dataSource?: string;
+}
+
+export interface FieldRegistry {
+  fields: Map<string, FieldInfo>;
+  addField(field: FieldInfo): void;
+  getField(name: string): FieldInfo | undefined;
+  getFieldsByState(state: FieldState): FieldInfo[];
+  getFieldsBySource(source: FieldSource): FieldInfo[];
+  hasField(name: string): boolean;
+  getCanonicalName(name: string): string;
+  mergeField(name: string, updates: Partial<FieldInfo>): void;
+}
+
+export class FieldRegistryImpl implements FieldRegistry {
+  fields: Map<string, FieldInfo>;
+  private canonicalNameMap: Map<string, string>;
+
+  constructor() {
+    this.fields = new Map();
+    this.canonicalNameMap = new Map();
+  }
+
+  addField(field: FieldInfo): void {
+    this.fields.set(field.name, field);
+    this.canonicalNameMap.set(field.canonicalName.toLowerCase(), field.name);
+  }
+
+  getField(name: string): FieldInfo | undefined {
+    return this.fields.get(name);
+  }
+
+  getFieldsByState(state: FieldState): FieldInfo[] {
+    return Array.from(this.fields.values()).filter(f => f.state === state);
+  }
+
+  getFieldsBySource(source: FieldSource): FieldInfo[] {
+    return Array.from(this.fields.values()).filter(f => f.source === source);
+  }
+
+  hasField(name: string): boolean {
+    return this.fields.has(name);
+  }
+
+  getCanonicalName(name: string): string {
+    const lowerName = name.toLowerCase();
+    const mappedName = this.canonicalNameMap.get(lowerName);
+    if (mappedName) {
+      return mappedName;
+    }
+    return name;
+  }
+
+  mergeField(name: string, updates: Partial<FieldInfo>): void {
+    const existing = this.fields.get(name);
+    if (existing) {
+      const merged: FieldInfo = {
+        ...existing,
+        ...updates,
+        name: existing.name,
+        canonicalName: updates.canonicalName || existing.canonicalName,
+      };
+      this.fields.set(name, merged);
+      if (updates.canonicalName && updates.canonicalName !== existing.canonicalName) {
+        this.canonicalNameMap.set(updates.canonicalName.toLowerCase(), name);
+      }
+    }
+  }
+
+  // Priority-based field addition: higher priority sources override lower priority
+  addFieldWithPriority(field: FieldInfo): boolean {
+    const canonicalName = field.canonicalName.toLowerCase();
+    const existingName = this.canonicalNameMap.get(canonicalName);
+    
+    if (existingName) {
+      const existing = this.fields.get(existingName);
+      if (!existing) {
+        // Inconsistency in registry state, clean up and add new field
+        this.canonicalNameMap.delete(canonicalName);
+        this.addField(field);
+        return true;
+      }
+      
+      if (this.getPriority(existing.source) >= this.getPriority(field.source)) {
+        // Existing field has equal or higher priority, don't override
+        return false;
+      }
+      // New field has higher priority, replace existing
+      this.fields.delete(existingName);
+    }
+    
+    this.addField(field);
+    return true;
+  }
+
+  private getPriority(source: FieldSource): number {
+    const priorityOrder: Record<FieldSource, number> = {
+      [FieldSource.AUTO_INJECTED]: 5,
+      [FieldSource.SESSION]: 4,
+      [FieldSource.ORIGINAL]: 3,
+      [FieldSource.UPSTREAM]: 2,
+      [FieldSource.LLM]: 1,
+      [FieldSource.DEFAULT]: 0,
+    };
+    return priorityOrder[source] ?? 0;
+  }
+
+  clear(): void {
+    this.fields.clear();
+    this.canonicalNameMap.clear();
+  }
+}
 
 export class PipelineCompilationError extends Error {
   errors: PipelineIntentValidationError[];
@@ -141,6 +281,7 @@ export class PipelineEngine {
     this.generator = new PipelineIntentGenerator({
       anthropicApiKey: config.anthropicApiKey,
       schema: config.schema,
+      builtSchema: config.builtSchema, // Pass full schema with traits
       sessionCursorStore: config.sessionCursorStore,
     });
 
@@ -182,11 +323,7 @@ export class PipelineEngine {
     
     // Non-blocking availability check
     this.calciteClient.isAvailable().then(available => {
-      if (available) {
-        console.log('Calcite compiler: connected at', this.calciteClient['baseUrl'])
-      } else {
-        console.log('Calcite compiler: not available - using fallback SQL builder')
-      }
+      // Calcite availability check - no action needed
     });
 
     // Register nodes with dependencies
@@ -575,10 +712,15 @@ export class PipelineEngine {
             const currentStaticValues = writePayload.staticValues || {};
             const missingRequired = getUserSuppliedRequired(classifications, currentStaticValues);
 
-            // Check if missing columns are in optionalFields - if so, don't raise error
+            // Check if missing columns are in optionalFields or resolvedFields - if so, don't raise error
             const stepOptionalFields = (step.config as any)?.optionalFields || [];
+            const stepResolvedFields = (step.config as any)?.resolvedFields || [];
+            const optionalOrResolvedFieldNames = new Set([
+              ...stepOptionalFields.map((of: any) => of.column),
+              ...stepResolvedFields.map((rf: any) => rf.column)
+            ]);
             const trulyMissing = missingRequired.filter(m =>
-              !stepOptionalFields.some((of: any) => of.column === m.column)
+              !optionalOrResolvedFieldNames.has(m.column)
             );
 
             // Always return WRITE_INCOMPLETE if there are missing columns NOT in optionalFields
@@ -623,15 +765,17 @@ export class PipelineEngine {
             
             if (!missingColumnsResult.complete) {
               const missing = missingColumnsResult.missing!;
-              // Check if missing columns are in optionalFields - if so, don't raise error
+              // Check if missing columns are in optionalFields or resolvedFields - if so, don't raise error
               const stepOptionalFields = (step.config as any)?.optionalFields || [];
-              const missingOptionalFields = missing.filter(m =>
-                stepOptionalFields.some((of: any) => of.column === m.column)
-              );
+              const stepResolvedFields = (step.config as any)?.resolvedFields || [];
+              const optionalOrResolvedFieldNames = new Set([
+                ...stepOptionalFields.map((of: any) => of.column),
+                ...stepResolvedFields.map((rf: any) => rf.column)
+              ]);
 
-              // Only raise error for columns NOT in optionalFields
+              // Only raise error for columns NOT in optionalFields or resolvedFields
               const trulyMissing = missing.filter(m =>
-                !stepOptionalFields.some((of: any) => of.column === m.column)
+                !optionalOrResolvedFieldNames.has(m.column)
               );
 
               if (trulyMissing.length > 0) {
@@ -764,9 +908,13 @@ export class PipelineEngine {
       sessionCtx,
       writePayload.mode === 'update' ? 'update' : 'insert'
     );
-    
-    const missingRequired = getUserSuppliedRequired(classifications, currentStaticValues);
-    
+
+    const step = existingPlan.intent.steps.find(s => s.id === stepId);
+    const resolvedFields = (step?.config as any)?.resolvedFields || [];
+    const resolvedFieldNames: Set<string> = new Set(resolvedFields.map((rf: any) => rf.column as string));
+
+    const missingRequired = getUserSuppliedRequired(classifications, currentStaticValues, resolvedFieldNames);
+
     // Filter: skip columns that have a schema default from DDLParser
     const mustPrompt = missingRequired.filter(c => {
       const colDef = tableColumns?.get(c.column);
@@ -781,11 +929,14 @@ export class PipelineEngine {
       return true;
     });
 
-    // Check if missing columns are in optionalFields - if so, don't raise error
-    const step = existingPlan.intent.steps.find(s => s.id === stepId);
+    // Check if missing columns are in optionalFields or resolvedFields - if so, don't raise error
     const optionalFields = (step?.config as any)?.optionalFields || [];
+    const optionalOrResolvedFieldNames = new Set([
+      ...optionalFields.map((of: any) => of.column),
+      ...resolvedFields.map((rf: any) => rf.column)
+    ]);
     const trulyMissing = mustPrompt.filter(m =>
-      !optionalFields.some((of: any) => of.column === m.column)
+      !optionalOrResolvedFieldNames.has(m.column)
     );
 
     // If still incomplete, return plan with remaining WRITE_INCOMPLETE error
@@ -827,9 +978,6 @@ export class PipelineEngine {
     const schemaValidation = await this.schemaValidator.validatePipeline(plan.graph);
     
     if (!schemaValidation.isValid) {
-      console.log('\nSchema validation failed:');
-      console.log(this.schemaValidator.formatForDisplay(schemaValidation));
-      
       const validationError = new Error(`Schema validation failed: ${schemaValidation.summary}`);
       (validationError as any).schemaValidation = schemaValidation;
       throw validationError;
@@ -838,9 +986,6 @@ export class PipelineEngine {
     // Attach schema validation warnings to plan for CLI to handle optional field prompting
     if (schemaValidation.warnings.length > 0) {
       (plan as any).schemaValidationWarnings = schemaValidation.warnings;
-      console.log(`Schema validation passed with ${schemaValidation.warnings.length} warning(s)`);
-    } else {
-      console.log('Schema validation passed successfully');
     }
 
     // Merge budget with correct precedence: defaults < plan.intent.budget < config.budget (user always wins)
@@ -877,7 +1022,7 @@ export class PipelineEngine {
     const auditStart = Date.now();
     
     try {
-      const execution = await this.scheduler.execute(plan.graph, ctx);
+      const execution = await this.scheduler.run(plan.graph, ctx, plan.intent);
       const durationMs = Date.now() - startTime;
 
       // Add audit logging for successful execution
@@ -1055,8 +1200,25 @@ export class PipelineEngine {
       return errors;
     }
 
-    console.log('[validateQueryIntentColumns] Validating', intent.columns.length, 'columns');
-    console.log('[validateQueryIntentColumns] Schema has', schema.tables.size, 'tables');
+    // Build alias map from joins to resolve table aliases to actual table names
+    const aliasMap = new Map<string, string>();
+    if (intent.joins && Array.isArray(intent.joins)) {
+      for (const join of intent.joins) {
+        if (join.alias && join.table) {
+          aliasMap.set(join.alias, join.table);
+        }
+      }
+    }
+
+    // Helper function to resolve table name (handles aliases)
+    const resolveTableName = (tableName: string | undefined): string => {
+      if (!tableName) return intent.table;
+      // If it's an alias, resolve to actual table name
+      if (aliasMap.has(tableName)) {
+        return aliasMap.get(tableName)!;
+      }
+      return tableName;
+    };
 
     // Validate columns in SELECT clause
     for (const col of intent.columns) {
@@ -1065,19 +1227,16 @@ export class PipelineEngine {
         continue;
       }
 
-      const tableName = col.table || intent.table;
+      const tableName = resolveTableName(col.table || intent.table);
       const tableConfig = schema.tables.get(tableName);
-      
-      console.log(`[validateQueryIntentColumns] Checking column "${col.field}" in table "${tableName}":`, !!tableConfig);
-      
+
       if (!tableConfig) {
         errors.push(`Column "${col.field}" references unknown table "${tableName}"`);
         continue;
       }
 
       const columnExists = tableConfig.columns.some((c: any) => c.name === col.field);
-      console.log(`[validateQueryIntentColumns] Column "${col.field}" exists in "${tableName}":`, columnExists);
-      
+
       if (!columnExists) {
         const availableColumns = tableConfig.columns.map((c: any) => c.name).join(', ');
         errors.push(
@@ -1090,7 +1249,7 @@ export class PipelineEngine {
     // Validate columns in filters
     if (intent.filters) {
       for (const filter of intent.filters) {
-        const tableName = filter.table || intent.table;
+        const tableName = resolveTableName(filter.table || intent.table);
         const tableConfig = schema.tables.get(tableName);
         if (!tableConfig) {
           errors.push(`Filter column "${filter.field}" references unknown table "${tableName}"`);
@@ -1111,7 +1270,7 @@ export class PipelineEngine {
     // Validate columns in orderBy
     if (intent.orderBy) {
       for (const order of intent.orderBy) {
-        const tableName = order.table || intent.table;
+        const tableName = resolveTableName(order.table || intent.table);
         const tableConfig = schema.tables.get(tableName);
         if (!tableConfig) {
           errors.push(`OrderBy column "${order.field}" references unknown table "${tableName}"`);
@@ -1246,10 +1405,6 @@ export class PipelineEngine {
                     });
                   }
                   
-                  console.log(
-                    `[CrossDBDecomposer] Added edge: _input → ${dStep.nodeId}`
-                  );
-                  
                   // Add edge: lookup → primary node
                   const edgeId = `e_${dStep.nodeId}_${nodeId}`;
                   if (graph.edges instanceof Map) {
@@ -1273,11 +1428,6 @@ export class PipelineEngine {
                     (c: any) => c.alias || c.field
                   );
                   fieldMap.set(dStep.nodeId, lookupFields);
-                  
-                  console.log(
-                    `[CrossDBDecomposer] Added lookup node: ${dStep.nodeId} ` +
-                    `(${dStep.datasource}) → ${nodeId}`
-                  );
                 }
               }
               
@@ -1288,13 +1438,6 @@ export class PipelineEngine {
           // No cross-DB joins — normal single-datasource path
           (node.payload as QueryPayload).intent = queryIntent;
           (node.payload as QueryPayload).datasource = datasource;
-
-          if (datasource !== 'default') {
-            console.log(
-              `[DataSourceRouter] Node "${nodeId}": ` +
-              `table="${primaryTable}" → datasource="${datasource}"`
-            );
-          }
 
           const fieldNames = queryIntent.columns.map(
             (c: any) => c.alias || c.field
@@ -1389,18 +1532,8 @@ export class PipelineEngine {
           
           writeConfig.datasource = datasource;
 
-          if (datasource !== 'default') {
-            console.log(
-              `[DataSourceRouter] Write node "${step.id}": ` +
-              `table="${table}" → datasource="${datasource}"`
-            );
-          }
-
           node.payload = writeConfig;
 
-          // Log final payload after datasource is correctly set
-          console.log('[WriteEnrichment] Final payload:', JSON.stringify(node.payload, null, 2));
-          
           // WriteNodes pass through the fields they received from upstream.
           // This allows downstream nodes (e.g. another WriteNode) to see 
           // the same fields that were available to this WriteNode.
@@ -1472,8 +1605,6 @@ export class PipelineEngine {
       const node = graph.nodes.get(id)
       if (node?.kind === 'query') {
         const qp = node.payload as any
-        console.log(`[upstreamTables] QueryNode '${id}': table=${qp.intent?.table}, ` +
-          `joins=${JSON.stringify(qp.intent?.joins?.map((j:any) => j.table))}`)
         if (qp.intent?.table) tables.push(qp.intent.table)
         qp.intent?.joins?.forEach((j: any) => {
           if (j.table) tables.push(j.table)
@@ -1523,12 +1654,6 @@ export class PipelineEngine {
         }
       }
 
-      console.log(
-        `[Plan] WriteNode '${nodeId}': upstreamTables=${JSON.stringify(upstreamTables)}, ` +
-        `upstreamFields=${JSON.stringify(upstreamFields)}, ` +
-        `columns=${JSON.stringify(payload.columns)}` 
-      )
-
       // Build a simulated row from upstream field names (values don't matter for validation)
       const simulatedRow = Object.fromEntries(upstreamFields.map(f => [f, '__present__']))
 
@@ -1576,13 +1701,6 @@ export class PipelineEngine {
         unresolvable.push(col)
       }
 
-      // Log auto-remappings (not an error, just informational)
-      if (remapped.length > 0) {
-        console.log(
-          `[Plan] WriteNode '${nodeId}': auto-remapped fields via FK:\n` +
-          remapped.map(r => `  ${r.writeCol} â ${r.sourceField} (${r.via})`).join('\n')
-        )
-      }
 
       // Return errors for unresolvable columns
       if (unresolvable.length > 0) {
@@ -1776,7 +1894,6 @@ Return ONLY a JSON array of operations, no markdown, no explanation.`;
     });
 
     const raw = response.content[0].type === 'text' ? response.content[0].text : '[]';
-    console.log('[Transform Enrichment LLM Output]', raw);
     const clean = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
 
     try {
@@ -1850,7 +1967,6 @@ Return ONLY the ExprAST JSON object, no markdown, no explanation.`;
   });
 
   const raw = response.content[0].type === 'text' ? response.content[0].text : '';
-  console.log('[Conditional Enrichment LLM Output]', raw);
   const clean = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
 
     function stripTablePrefixes(expr: any): any {
@@ -1926,12 +2042,12 @@ Return ONLY the ExprAST JSON object, no markdown, no explanation.`;
   ): Promise<WritePayload> {
     const availableFields = this.getAvailableFields(step.id, { description: '', steps: [step], budget: {} }, fieldMap);
     
+    // Initialize field registry for deduplication and state tracking
+    const fieldRegistry = new FieldRegistryImpl();
+    
     // Extract existing fields from the original step configuration
     const originalFields = step.config?.fields as Record<string, any> || {};
     const originalStaticValues = step.config?.staticValues as Record<string, any> || {};
-    console.log('[WriteEnrichment] Raw step.config.fields:', step.config?.fields);
-    console.log('[WriteEnrichment] Raw step.config.staticValues:', step.config?.staticValues);
-    console.log('[WriteEnrichment] originalFields type:', Array.isArray(originalFields) ? 'array' : 'object');
 
     // Get the correct schema based on table name (datasource not yet set at enrichment time)
     const targetTableForSchema = step.config?.table as string;
@@ -1974,9 +2090,7 @@ Return ONLY the ExprAST JSON object, no markdown, no explanation.`;
             );
             if (result.rows.length > 0) {
               crmUserId = result.rows[0].id;
-              console.log(`[WriteEnrichment] Mapped auth user ${userId} to CRM user ID ${crmUserId}`);
             } else {
-              console.debug('[WriteEnrichment] CRM user not found, using default userId=1');
             }
           } catch (err) {
             console.warn(`[WriteEnrichment] Failed to lookup CRM user: ${(err as Error).message}, using default ID 1`);
@@ -2000,10 +2114,6 @@ Return ONLY the ExprAST JSON object, no markdown, no explanation.`;
       // SessionColumnInjection (below) handles workspace_id, owner_user_id, created_by_user_id, updated_by_user_id
       // for all datasources in a datasource-agnostic manner
       exclusions = buildIntentExclusionList(classifications);
-
-      if (DEBUG) {
-        console.log(`[ColumnClassifier] Excluded from LLM for ${targetTable} (${mode}):`, exclusions);
-      }
     }
     
     // Datasource-agnostic session column injection (always runs, outside schema check)
@@ -2017,9 +2127,7 @@ Return ONLY the ExprAST JSON object, no markdown, no explanation.`;
     
     if (targetTable) {
       // Inject session columns regardless of datasource
-      console.log(`[SessionColumnInjection] Checking table ${targetTable} in schema, datasource=${resolvedDatasource}`);
       const tableDef = (schemaToUse as any).parsed.tables.get(targetTable);
-      console.log(`[SessionColumnInjection] Table def found: ${!!tableDef}, columns: ${tableDef ? Array.from(tableDef.columns.keys()).join(', ') : 'N/A'}`);
       
       for (const [col, sessionKey] of Object.entries(SESSION_COLUMNS)) {
         // Check if the table has this column
@@ -2029,12 +2137,6 @@ Return ONLY the ExprAST JSON object, no markdown, no explanation.`;
           if (!exclusions.includes(col)) {
             exclusions.push(col);
           }
-          console.log(
-            `[SessionColumnInjection] Injected ${col} = ${sessionValue} ` +
-            `(from ${sessionKey}) for ${targetTable} (${resolvedDatasource})`
-          );
-        } else {
-          if (DEBUG) console.log(`[SessionColumnInjection] Column ${col} not found in table ${targetTable}`);
         }
       }
       
@@ -2059,9 +2161,6 @@ Return ONLY the ExprAST JSON object, no markdown, no explanation.`;
               if (!exclusions.includes(col)) {
                 exclusions.push(col);
               }
-              console.log(
-                `[SessionColumnInjection] Injected ${col} = NOW() for audit table: ${targetTable}`
-              );
             }
           }
         } else {
@@ -2073,9 +2172,6 @@ Return ONLY the ExprAST JSON object, no markdown, no explanation.`;
               if (!exclusions.includes(col)) {
                 exclusions.push(col);
               }
-              console.log(
-                `[SessionColumnInjection] Injected ${col} = NOW() for ${targetTable} (${resolvedDatasource})`
-              );
             }
           }
         }
@@ -2088,9 +2184,6 @@ Return ONLY the ExprAST JSON object, no markdown, no explanation.`;
             if (!exclusions.includes(col)) {
               exclusions.push(col);
             }
-            console.log(
-              `[SessionColumnInjection] Injected ${col} = NOW() for UPDATE on ${targetTable} (${resolvedDatasource})`
-            );
           }
         }
       }
@@ -2109,7 +2202,6 @@ Return ONLY the ExprAST JSON object, no markdown, no explanation.`;
         if (!exclusions.includes('action')) {
           exclusions.push('action');
         }
-        console.log(`[SessionColumnInjection] Auto-derived action=${autoValues['action']} for audit_logs`);
       }
     }
     
@@ -2204,12 +2296,10 @@ Return ONLY raw JSON.`;
     });
 
     const raw = response.content[0].type === 'text' ? response.content[0].text : '{}';
-    console.log('[Write Enrichment LLM Output]', raw);
     const clean = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
 
     try {
       const config = JSON.parse(clean);
-      console.debug('[WriteEnrichment] Parsed config:', JSON.stringify(config, null, 2));
       
       // Sanitize staticValues: remove entries where value === key (LLM hallucination)
       if (config.staticValues) {
@@ -2237,7 +2327,6 @@ Return ONLY raw JSON.`;
           if (typeof val === 'number') {
             if (colType === 'TEXT' || colType === 'VARCHAR' || colType === 'CHARACTER VARYING') {
               obj[key] = String(val);
-              console.log(`[WriteEnrichment] Converted ${key} from number to string for ${colType} column`);
             }
           }
         }
@@ -2260,11 +2349,20 @@ Return ONLY raw JSON.`;
         }
         if (!config.staticValues) config.staticValues = {};
         config.staticValues[col] = val;
+        
+        // Track auto-injected fields in registry for deduplication
+        fieldRegistry.addFieldWithPriority({
+          name: col,
+          canonicalName: col,
+          state: FieldState.RESOLVED,
+          source: FieldSource.AUTO_INJECTED,
+          resolvedValue: val,
+          isReadOnly: true,
+        });
       }
       
       // Preserve original table name from step.config
       const tableName = step.config?.table as string ?? config.table ?? 'output';
-      console.log('[WriteEnrichment] Table name:', tableName);
       
       // Merge original fields with LLM-generated configuration
       const mergedColumns: string[] = [];
@@ -2272,10 +2370,6 @@ Return ONLY raw JSON.`;
       const mergedStaticValues: Record<string, any> = { ...config.staticValues };
       // Column aliases for mapping target columns to upstream fields
       const columnAliases: Record<string, string> = {};
-      console.log('[WriteEnrichment] Original fields:', JSON.stringify(originalFields, null, 2));
-      console.log('[WriteEnrichment] LLM config columns:', config.columns);
-      console.log('[WriteEnrichment] LLM config staticValues:', config.staticValues);
-      console.log('[WriteEnrichment] Extracted aliases:', JSON.stringify(extractedAliases));
 
       // Apply pre-extracted aliases from originalFields (set before LLM call)
       for (const [targetCol, upstreamField] of Object.entries(extractedAliases)) {
@@ -2285,16 +2379,22 @@ Return ONLY raw JSON.`;
       // Process original fields
       if (Array.isArray(originalFields)) {
         // Handle array case - just use the field names directly as columns
-        console.log('[WriteEnrichment] Processing originalFields as array');
         for (const fieldName of originalFields) {
-          if (DEBUG) console.log(`[WriteEnrichment] Processing array field: '${fieldName}'`);
+          
+          // Track original field in registry
+          fieldRegistry.addFieldWithPriority({
+            name: fieldName,
+            canonicalName: fieldName,
+            state: FieldState.PENDING,
+            source: FieldSource.ORIGINAL,
+          });
+          
           if (!mergedColumns.includes(fieldName)) {
             mergedColumns.push(fieldName);
           }
         }
       } else {
         // Handle object case - process field/value pairs
-        console.log('[WriteEnrichment] Processing originalFields as object');
         for (const [fieldName, fieldValue] of Object.entries(originalFields)) {
           const fieldValueStr = String(fieldValue);
 
@@ -2306,6 +2406,14 @@ Return ONLY raw JSON.`;
               const sourceStep = templateMatch[1]; // e.g., "get_globex_latest_order"
               const templateField = templateMatch[2]; // e.g., "id"
 
+              // Track original field in registry
+              fieldRegistry.addFieldWithPriority({
+                name: fieldName,
+                canonicalName: fieldName,
+                state: FieldState.PENDING,
+                source: FieldSource.ORIGINAL,
+              });
+
               // Use the target field name (fieldName) - this is the actual column being written to
               // The column alias mapping will handle resolving the upstream field
               if (!mergedColumns.includes(fieldName)) {
@@ -2313,6 +2421,13 @@ Return ONLY raw JSON.`;
               }
             } else {
               // If it's a complex template, add the whole field as a column
+              fieldRegistry.addFieldWithPriority({
+                name: fieldName,
+                canonicalName: fieldName,
+                state: FieldState.PENDING,
+                source: FieldSource.ORIGINAL,
+              });
+              
               if (!mergedColumns.includes(fieldName)) {
                 mergedColumns.push(fieldName);
               }
@@ -2324,7 +2439,14 @@ Return ONLY raw JSON.`;
             if (tableFieldMatch) {
               const upstreamTable = tableFieldMatch[1]; // e.g., "opportunity"
               const upstreamField = tableFieldMatch[2]; // e.g., "id"
-              console.log(`[WriteEnrichment] Detected table.field reference: ${fieldName} = ${fieldValueStr} (table=${upstreamTable}, field=${upstreamField})`);
+              
+              // Track original field in registry
+              fieldRegistry.addFieldWithPriority({
+                name: fieldName,
+                canonicalName: fieldName,
+                state: FieldState.PENDING,
+                source: FieldSource.ORIGINAL,
+              });
               
               // Add the target field name to columns (not staticValues)
               if (!mergedColumns.includes(fieldName)) {
@@ -2335,44 +2457,95 @@ Return ONLY raw JSON.`;
               // This will be used later to map fieldName to upstreamField
               if (!columnAliases[fieldName]) {
                 columnAliases[fieldName] = upstreamField;
-                console.log(`[WriteEnrichment] Added column alias: ${fieldName} ← ${upstreamField}`);
               }
             } else {
               // Fallback: treat as literal
+              // Only mark as RESOLVED if value is not null
+              const state = fieldValue === null || fieldValue === undefined ? FieldState.PENDING : FieldState.RESOLVED;
+              
+              fieldRegistry.addFieldWithPriority({
+                name: fieldName,
+                canonicalName: fieldName,
+                state: state,
+                source: FieldSource.ORIGINAL,
+                resolvedValue: fieldValue,
+              });
+              
               mergedStaticValues[fieldName] = fieldValue;
             }
           } else if (fieldValue === fieldName) {
             // Field name used as its own value - LLM hallucination
             // Treat as a dynamic column reference, not a static value
             console.warn(`[WriteEnrichment] Dropping self-referential value: '${fieldName}' = '${fieldValue}' - treating as dynamic column`)
+            
+            fieldRegistry.addFieldWithPriority({
+              name: fieldName,
+              canonicalName: fieldName,
+              state: FieldState.PENDING,
+              source: FieldSource.ORIGINAL,
+            });
+            
             if (!mergedColumns.includes(fieldName)) {
               mergedColumns.push(fieldName)
             }
           } else {
             // It's a literal value
+            // Only mark as RESOLVED if value is not null
+            const state = fieldValue === null || fieldValue === undefined ? FieldState.PENDING : FieldState.RESOLVED;
+            
+            fieldRegistry.addFieldWithPriority({
+              name: fieldName,
+              canonicalName: fieldName,
+              state: state,
+              source: FieldSource.ORIGINAL,
+              resolvedValue: fieldValue,
+            });
+            
             mergedStaticValues[fieldName] = fieldValue;
           }
         }
       }
       
       // Add any additional columns from LLM config
-      console.log('[WriteEnrichment] Adding LLM config columns to merged columns');
       for (const column of config.columns || []) {
-        if (DEBUG) console.log(`[WriteEnrichment] Processing LLM column: '${column}'`);
+        
+        // Track LLM column in registry
+        fieldRegistry.addFieldWithPriority({
+          name: column,
+          canonicalName: column,
+          state: FieldState.PENDING,
+          source: FieldSource.LLM,
+        });
+        
         if (!mergedColumns.includes(column)) {
           mergedColumns.push(column);
-          console.log(`[WriteEnrichment] Added column '${column}' to merged columns`);
-        } else {
-          console.log(`[WriteEnrichment] Column '${column}' already exists in merged columns`);
         }
       }
-      console.log('[WriteEnrichment] Final merged columns:', mergedColumns);
+      
+      // Track LLM staticValues in registry
+      for (const [key, val] of Object.entries(config.staticValues || {})) {
+        // Skip if already tracked as auto-injected (higher priority)
+        if (fieldRegistry.getField(key)?.source === FieldSource.AUTO_INJECTED) {
+          continue;
+        }
+        
+        // Only mark as RESOLVED if value is not null
+        // Null values mean the field should be prompted to the user
+        const state = val === null || val === undefined ? FieldState.PENDING : FieldState.RESOLVED;
+        
+        fieldRegistry.addFieldWithPriority({
+          name: key,
+          canonicalName: key,
+          state: state,
+          source: FieldSource.LLM,
+          resolvedValue: val,
+        });
+      }
       
       // Re-apply auto-injected values (session_scoped, etc.) to ensure they're always preserved
       // even if not in originalFields or LLM output
       for (const [col, val] of Object.entries(autoValues)) {
         mergedStaticValues[col] = val;
-        if (DEBUG) console.log(`[WriteEnrichment] Re-applied auto-injected value: ${col} = ${val}`);
       }
       
       // Apply type conversion to auto-injected values based on DDLParser type info
@@ -2660,6 +2833,11 @@ Return ONLY raw JSON.`;
         ...Object.keys(mergedStaticValues)
       ]);
       const autoManagedColumns = new Set(['id', 'created_at', 'updated_at', 'deleted_at']);
+      
+      // Get resolved field names from registry to exclude them from optionalFields
+      const resolvedFieldNames = new Set(
+        fieldRegistry.getFieldsByState(FieldState.RESOLVED).map(f => f.name)
+      );
 
       const tableDefForOptional = (schemaToUse as any).parsed.tables.get(tableName);
       const constraints = (schemaToUse as any).parsed?.constraints;
@@ -2674,6 +2852,12 @@ Return ONLY raw JSON.`;
 
           // Skip columns with default values
           if (colDef.defaultRaw !== null) continue;
+
+          // Skip columns that are already resolved (from field registry)
+          if (resolvedFieldNames.has(colName)) {
+            console.log(`[WriteEnrichment] Skipping resolved field from optionalFields: ${colName}`);
+            continue;
+          }
 
           // Check for enum constraint
           const colKey = `${tableName}.${colName}`;
@@ -2700,6 +2884,30 @@ Return ONLY raw JSON.`;
       if (step.config) {
         (step.config as any).optionalFields = optionalFields;
       }
+
+      // Populate resolvedFields with fields that have resolved values from the field registry
+      const resolvedFields: Array<{ column: string; source: string; value?: any; isReadOnly?: boolean }> = [];
+      const resolvedFieldInfos = fieldRegistry.getFieldsByState(FieldState.RESOLVED);
+      
+      for (const fieldInfo of resolvedFieldInfos) {
+        // Skip auto-managed columns from resolvedFields
+        if (autoManagedColumns.has(fieldInfo.name)) continue;
+        
+        resolvedFields.push({
+          column: fieldInfo.name,
+          source: fieldInfo.source,
+          value: fieldInfo.resolvedValue,
+          isReadOnly: fieldInfo.isReadOnly,
+        });
+      }
+
+      // Set resolvedFields on the step config for API response
+      if (step.config) {
+        (step.config as any).resolvedFields = resolvedFields;
+      }
+
+      console.log(`[WriteEnrichment] Resolved fields: ${resolvedFields.length} fields tracked`);
+      console.log(`[WriteEnrichment] Optional fields: ${optionalFields.length} fields tracked`);
 
       return finalPayload;
     } catch {

@@ -316,9 +316,10 @@ export class Scheduler {
     return order;
   }
 
-  async execute(
+  async run(
     graph: PipelineGraph,
-    ctx: ExecutionContext
+    ctx: ExecutionContext,
+    intent?: any
   ): Promise<ExecutionResult> {
     // 1. Validate graph
     const validation = validateGraph(graph, this.config.nodeRegistry);
@@ -338,6 +339,7 @@ export class Scheduler {
 
     const state: ExecutionState = {
       graph,
+      intent,
       nodeStates,
       ctx,
       activatedEdges: new Set(),
@@ -399,15 +401,12 @@ export class Scheduler {
     }
 
     // First, try to collect from exit nodes (this should be the primary behavior)
-    console.debug(`[Scheduler] Collecting outputs from exit nodes: ${JSON.stringify(graph.exitNodes)}`);
     let collectedFromExitNodes = false;
     for (const exitNodeId of graph.exitNodes) {
       const exitState = state.nodeStates.get(exitNodeId);
-      console.debug(`[Scheduler] Exit node ${exitNodeId}: state=${exitState?.status}, hasOutput=${exitState?.output !== undefined}`);
       if (exitState?.output !== undefined) {
         outputs.set(exitNodeId, exitState.output);
         collectedFromExitNodes = true;
-        console.debug(`[Scheduler] Collected output from exit node: ${exitNodeId}`);
       }
     }
     
@@ -421,17 +420,13 @@ export class Scheduler {
     
     // Only use the special fallback case if we still have no outputs
     if (outputs.size === 0 && outputNode && outputNode.kind === 'output') {
-      console.debug(`[Scheduler] Using fallback case - collecting from _output inputs`);
       const incomingEdges = getIncomingDataEdges(graph, '_output');
-      console.debug(`[Scheduler] _output incoming edges: ${JSON.stringify(incomingEdges.map(e => ({from: e.from, to: e.to})))}`);
       for (const edge of incomingEdges) {
         const sourceState = state.nodeStates.get(edge.from);
-        console.log(`[Scheduler] Checking edge from ${edge.from}: state=${sourceState?.status}, hasOutput=${sourceState?.output !== undefined}`);
         if (sourceState?.output !== undefined) {
           // Use the edge's outputKey if specified, otherwise use 'result'
           const outputKey = (outputNode.payload as any)?.outputKey ?? 'result';
           outputs.set(outputKey, sourceState.output);
-          console.log(`[Scheduler] Fallback: collected output from ${edge.from} with key ${outputKey}`);
           break; // Only take the first input
         }
       }
@@ -618,16 +613,6 @@ export class Scheduler {
     try {
       const inputs = getNodeInputs(nodeId, graph, state);
       
-      // Debug: Log node execution start
-      (nodeId.startsWith('_') ? console.debug : console.log)(`[Scheduler] Executing node ${nodeId} (${node.kind}) with inputs:`, {
-        inputKeys: Object.keys(inputs),
-        inputSample: inputs['input'] ? 
-          (inputs['input'].kind === 'tabular' ? 
-            `${inputs['input'].data.rows.length} rows` : 
-            inputs['input'].kind) : 
-          'none'
-      });
-      
       markNodeRunning(state, nodeId);
 
       // Calculate timeout for this node
@@ -705,23 +690,21 @@ export class Scheduler {
         actualInput = tabular({ rows: [mergedRow as Row], schema }, schema);
       }
 
-      // Debug: For write nodes, log payload details
-      if (node.kind === 'write') {
-        console.log(`[Scheduler] WriteNode ${nodeId} payload:`, JSON.stringify(node.payload, null, 2));
-        console.log(`[Scheduler] WriteNode ${nodeId} input type:`, actualInput?.kind);
-        if (actualInput?.kind === 'tabular') {
-          console.log(`[Scheduler] WriteNode ${nodeId} input rows:`, actualInput.data.rows.length);
+      // Add step config to execution context for write nodes
+      // This allows form-submitted values to be accessed during execution
+      const ctxWithStep = { ...state.ctx };
+      if ((state as any).intent?.steps) {
+        const step = (state as any).intent.steps.find((s: any) => s.id === nodeId);
+        if (step?.config) {
+          (ctxWithStep as any).step = { id: nodeId, config: step.config };
         }
       }
 
       const output = await executeWithTimeout(
-        executeWithRetry(node, def, actualInput, state.ctx, this.config, state),
+        executeWithRetry(node, def, actualInput, ctxWithStep, this.config, state),
         timeoutMs,
         nodeId
       );
-
-      // Debug: Log successful completion
-      (nodeId.startsWith('_') ? console.debug : console.log)(`[Scheduler] Node ${nodeId} completed successfully, output type:`, output?.kind);
 
       // Increment LLM budget after successful LLM execution
       if (node.kind === 'llm') {
@@ -947,9 +930,6 @@ export class Scheduler {
     const payload = node.payload as any;
     const result = this.config.evaluator.evaluate(payload.predicate, state.ctx.scope, currentRow);
     
-    // Debug: Log conditional evaluation
-    console.log(`Conditional ${nodeId}: predicate=${JSON.stringify(payload.predicate)} result=${result} for row=${JSON.stringify(currentRow)?.slice(0,50)}`);
-    
     if (typeof result !== 'boolean') {
       throw new TypeError(`ConditionalNode predicate must return boolean, got ${typeof result}`);
     }
@@ -1063,9 +1043,6 @@ export class Scheduler {
 
           // Collect body output
           const bodyOutput = getSubgraphOutput(bodyNodeIds, graph, iterState);
-
-          // Debug: Trace what bodyOutput is for each iteration
-          console.log(`iter ${iterCount}: bodyOutput=${JSON.stringify(bodyOutput)?.slice(0,80)} accumulated.length=${isCollection(accumulated) ? (accumulated as any).data.length : 'N/A'}`);
 
           // Update accumulator (always accumulate even if bodyOutput is undefined)
           accumulated = updateAccumulator(payload.accumulator, accumulated, bodyOutput ?? void_, iterCtx, this.config.evaluator);

@@ -53,6 +53,7 @@ export type NodeExecutionState = {
 
 export type ExecutionState = {
   graph: PipelineGraph;
+  intent?: any; // Intent with step configs for form values
   nodeStates: Map<NodeId, NodeExecutionState>;
   ctx: ExecutionContext;
   activatedEdges: Set<EdgeId>;

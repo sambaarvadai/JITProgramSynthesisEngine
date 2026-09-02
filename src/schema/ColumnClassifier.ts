@@ -143,12 +143,17 @@ export function getAutoResolvedValues(
 
 export function getUserSuppliedRequired(
   classifications: Map<string, ColumnClassification>,
-  existingValues:  Record<string, any>
+  existingValues:  Record<string, any>,
+  resolvedFieldNames?: Set<string>
 ): ColumnClassification[] {
   const required: ColumnClassification[] = [];
   for (const [col, c] of classifications) {
+    // Skip non-user_supplied traits (they're auto-resolved)
     if (c.trait !== 'user_supplied') continue;
+    // Skip if already has a value
     if (existingValues[col] !== undefined) continue;
+    // Skip if explicitly marked as resolved
+    if (resolvedFieldNames?.has(col)) continue;
     // Only flag if no default and not nullable
     // (caller must check schema for nullable/default — 
     //  ColumnClassifier doesn't re-read raw schema here)

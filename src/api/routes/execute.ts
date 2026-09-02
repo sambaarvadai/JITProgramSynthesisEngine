@@ -90,22 +90,120 @@ async function handlePlanJson(req: Request, res: Response) {
     const planId = crypto.randomUUID()
     const steps: PlanStep[] = planResult.intent.steps.map(step => {
       const stepConfig = step.config as any
+      
+      // Get resolved field names for deduplication
+      const resolvedFieldNames = new Set(
+        (stepConfig?.resolvedFields || []).map((rf: any) => rf.column)
+      );
+      
+      // Deduplicate optionalFields by removing any fields that are already resolved
+      const deduplicatedOptionalFields = (stepConfig?.optionalFields || []).filter(
+        (of: any) => !resolvedFieldNames.has(of.column)
+      );
+      
       return {
         id: step.id,
         kind: step.kind,
         description: step.description,
         datasource: stepConfig?.datasource || 'default',
         dependsOn: [],
-        optionalFields: stepConfig?.optionalFields || [],
+        optionalFields: deduplicatedOptionalFields,
         resolvedFields: stepConfig?.resolvedFields || [],
       }
     })
+
+    // Filter out auto-injected fields from params (generic post-processing)
+    // These fields are automatically resolved by the system and should not be treated as user parameters
+    const autoInjectedFields = new Set([
+      'workspace_id', 'owner_user_id', 'created_by_user_id', 'updated_by_user_id', // session-scoped/system_audited
+      'id', 'created_at', 'updated_at', 'deleted_at' // server-generated/auto-managed
+    ]);
+
+    // Collect all step-specific fields from write nodes to exclude from global params
+    // Use fields array from step config (all write node fields, not just optionalFields)
+    const stepSpecificFields = new Set<string>();
+    for (const step of planResult.intent.steps) {
+      if (step.kind === 'write' && (step.config as any)?.fields) {
+        const fields = (step.config as any).fields;
+        // fields can be an array of strings or an object with field definitions
+        if (Array.isArray(fields)) {
+          for (const field of fields) {
+            stepSpecificFields.add(field);
+          }
+        } else if (typeof fields === 'object') {
+          for (const field of Object.keys(fields)) {
+            stepSpecificFields.add(field);
+          }
+        }
+      }
+    }
+
+    // Collect missingColumns from compilationErrors
+    const missingColumnsFields = new Set<string>();
+    for (const error of planResult.compilationErrors) {
+      if (error.missingColumns) {
+        for (const col of error.missingColumns) {
+          // Handle different types of missing columns
+          if (typeof col === 'object' && 'column' in col) {
+            missingColumnsFields.add((col as any).column);
+          } else if (typeof col === 'string') {
+            missingColumnsFields.add(col);
+          }
+        }
+      }
+    }
+
+    // Collect optionalFields from all steps
+    const optionalFieldsSet = new Set<string>();
+    for (const step of planResult.intent.steps) {
+      if (step.kind === 'write' && (step.config as any)?.optionalFields) {
+        const optionalFields = (step.config as any).optionalFields;
+        for (const field of optionalFields) {
+          optionalFieldsSet.add(field.column);
+        }
+      }
+    }
+
+    console.log('[API] Original params:', Object.keys(planResult.intent.params || {}));
+    console.log('[API] Original params with descriptions:', planResult.intent.params);
+    console.log('[API] Step-specific fields:', Array.from(stepSpecificFields));
+    console.log('[API] Missing columns (required):', Array.from(missingColumnsFields));
+    console.log('[API] Optional fields:', Array.from(optionalFieldsSet));
+
+    const filteredParams = { ...planResult.intent.params };
+    if (filteredParams) {
+      for (const param of Object.keys(filteredParams)) {
+        // Exclude auto-injected fields
+        if (autoInjectedFields.has(param)) {
+          delete filteredParams[param];
+          continue;
+        }
+        // If param matches a missing column (required), it should be in Required Fields, not params
+        if (missingColumnsFields.has(param)) {
+          delete filteredParams[param];
+          continue;
+        }
+        // If param matches an optional field, it should be in Optional Fields, not params
+        if (optionalFieldsSet.has(param)) {
+          delete filteredParams[param];
+          continue;
+        }
+        // If param is a step-specific field, exclude it from params
+        if (stepSpecificFields.has(param)) {
+          delete filteredParams[param];
+          continue;
+        }
+      }
+    }
+
+    console.log('[API] Filtered params (truly global only):', Object.keys(filteredParams || {}));
 
     const planResponse: PlanResponse = {
       planId,
       description: planResult.intent.description,
       steps,
       estimatedLLMCalls: 0,
+      params: filteredParams,
       compilationErrors: planResult.compilationErrors.map(err => ({
         code: err.code,
         message: err.message,
@@ -141,7 +239,6 @@ async function handlePlanJson(req: Request, res: Response) {
           }
         }) ?? []
       })),
-      params: planResult.intent.params,
     }
 
     // Store the plan for execution
@@ -418,22 +515,120 @@ export function executeRoutes(): Router {
         const planId = crypto.randomUUID()
         const steps: PlanStep[] = planResult.intent.steps.map(step => {
           const stepConfig = step.config as any
+          
+          // Get resolved field names for deduplication
+          const resolvedFieldNames = new Set(
+            (stepConfig?.resolvedFields || []).map((rf: any) => rf.column)
+          );
+          
+          // Deduplicate optionalFields by removing any fields that are already resolved
+          const deduplicatedOptionalFields = (stepConfig?.optionalFields || []).filter(
+            (of: any) => !resolvedFieldNames.has(of.column)
+          );
+          
           return {
             id: step.id,
             kind: step.kind,
             description: step.description,
             datasource: stepConfig?.datasource || 'default',
             dependsOn: [],
-            optionalFields: stepConfig?.optionalFields || [],
+            optionalFields: deduplicatedOptionalFields,
             resolvedFields: stepConfig?.resolvedFields || [],
           }
         })
+
+        // Filter out auto-injected fields from params (generic post-processing)
+        // These fields are automatically resolved by the system and should not be treated as user parameters
+        const autoInjectedFields = new Set([
+          'workspace_id', 'owner_user_id', 'created_by_user_id', 'updated_by_user_id', // session-scoped/system_audited
+          'id', 'created_at', 'updated_at', 'deleted_at' // server-generated/auto-managed
+        ]);
+
+        // Collect all step-specific fields from write nodes to exclude from global params
+        // Use fields array from step config (all write node fields, not just optionalFields)
+        const stepSpecificFields = new Set<string>();
+        for (const step of planResult.intent.steps) {
+          if (step.kind === 'write' && (step.config as any)?.fields) {
+            const fields = (step.config as any).fields;
+            // fields can be an array of strings or an object with field definitions
+            if (Array.isArray(fields)) {
+              for (const field of fields) {
+                stepSpecificFields.add(field);
+              }
+            } else if (typeof fields === 'object') {
+              for (const field of Object.keys(fields)) {
+                stepSpecificFields.add(field);
+              }
+            }
+          }
+        }
+
+        // Collect missingColumns from compilationErrors
+        const missingColumnsFields = new Set<string>();
+        for (const error of planResult.compilationErrors) {
+          if (error.missingColumns) {
+            for (const col of error.missingColumns) {
+              // Handle different types of missing columns
+              if (typeof col === 'object' && 'column' in col) {
+                missingColumnsFields.add((col as any).column);
+              } else if (typeof col === 'string') {
+                missingColumnsFields.add(col);
+              }
+            }
+          }
+        }
+
+        // Collect optionalFields from all steps
+        const optionalFieldsSet = new Set<string>();
+        for (const step of planResult.intent.steps) {
+          if (step.kind === 'write' && (step.config as any)?.optionalFields) {
+            const optionalFields = (step.config as any).optionalFields;
+            for (const field of optionalFields) {
+              optionalFieldsSet.add(field.column);
+            }
+          }
+        }
+
+        console.log('[API] Original params:', Object.keys(planResult.intent.params || {}));
+        console.log('[API] Original params with descriptions:', planResult.intent.params);
+        console.log('[API] Step-specific fields:', Array.from(stepSpecificFields));
+        console.log('[API] Missing columns (required):', Array.from(missingColumnsFields));
+        console.log('[API] Optional fields:', Array.from(optionalFieldsSet));
+
+        const filteredParams = { ...planResult.intent.params };
+        if (filteredParams) {
+          for (const param of Object.keys(filteredParams)) {
+            // Exclude auto-injected fields
+            if (autoInjectedFields.has(param)) {
+              delete filteredParams[param];
+              continue;
+            }
+            // If param matches a missing column (required), it should be in Required Fields, not params
+            if (missingColumnsFields.has(param)) {
+              delete filteredParams[param];
+              continue;
+            }
+            // If param matches an optional field, it should be in Optional Fields, not params
+            if (optionalFieldsSet.has(param)) {
+              delete filteredParams[param];
+              continue;
+            }
+            // If param is a step-specific field, exclude it from params
+            if (stepSpecificFields.has(param)) {
+              delete filteredParams[param];
+              continue;
+            }
+          }
+        }
+
+        console.log('[API] Filtered params (truly global only):', Object.keys(filteredParams || {}));
 
         const planResponse: PlanResponse = {
           planId,
           description: planResult.intent.description,
           steps,
           estimatedLLMCalls: 0,
+          params: filteredParams,
           compilationErrors: planResult.compilationErrors.map(err => ({
             code: err.code,
             message: err.message,
@@ -469,7 +664,6 @@ export function executeRoutes(): Router {
               }
             }) ?? []
           })),
-          params: planResult.intent.params,
         }
 
         console.log('[API] Plan response:', planResponse)

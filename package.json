@@ -27,9 +27,9 @@
     "api": "tsx src/api/server.ts",
     "api:dev": "tsx watch src/api/server.ts",
     "ui:dev": "cd ui && npm run dev",
-    "test": "jest",
-    "test:api": "jest --testPathPattern=test/api",
-    "test:watch": "jest --watch"
+    "test": "npx tsx --test src/**/*.test.ts",
+    "test:api": "npx tsx --test src/api/**/*.test.ts",
+    "test:watch": "npx tsx --test --watch src/**/*.test.ts"
   },
   "jest": {
     "preset": "ts-jest/presets/default-esm",

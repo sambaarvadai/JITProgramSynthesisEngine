@@ -172,6 +172,7 @@ export async function bootstrap(userId?: string): Promise<BootstrappedServices> 
   const engine = new PipelineEngine({
     anthropicApiKey: process.env.ANTHROPIC_API_KEY!,
     schema: combinedSchema,
+    builtSchema: crmSchema, // Pass full schema with traits
     storageBackend: backend,
     sessionCursorStore,
     multiSchema,
