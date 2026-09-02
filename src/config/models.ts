@@ -26,6 +26,11 @@ export const MODELS = {
   LLM_NODE:
     process.env.ANTHROPIC_LLM_NODE_MODEL ||
     'claude-sonnet-4-6',
+
+  // Ontology builder — runs infrequently during onboarding, so a stronger/slower model is fine
+  ONTOLOGY_BUILDER:
+    process.env.ANTHROPIC_ONTOLOGY_BUILDER_MODEL ||
+    'claude-sonnet-4-6',
 } as const;
 
 export type ModelName = keyof typeof MODELS;

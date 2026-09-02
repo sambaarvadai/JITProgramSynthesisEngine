@@ -14,6 +14,7 @@ type DataValueKind =
   | 'record'       // single row: Row
   | 'scalar'       // single primitive: Scalar
   | 'collection'   // ordered list of DataValues
+  | 'schema'       // structured schema artifact (e.g. BuiltSchema)
   | 'void';        // no output (sink nodes)
 
 // DataValue — discriminated union, flows along edges
@@ -22,6 +23,7 @@ type DataValue =
   | { kind: 'record';     data: Row;          schema: RowSchema }
   | { kind: 'scalar';     data: Scalar;       type: EngineType }
   | { kind: 'collection'; data: DataValue[];  itemKind: DataValueKind }
+  | { kind: 'schema';     data: any; }
   | { kind: 'void' };
 
 // DataType — compile-time type descriptor for edges
@@ -31,6 +33,7 @@ type DataType =
   | { kind: 'record' }
   | { kind: 'scalar';     type: EngineType }
   | { kind: 'collection'; itemKind: DataValueKind }
+  | { kind: 'schema' }
   | { kind: 'void' }
   | { kind: 'any' };     // escape hatch — accepts anything
 
@@ -59,6 +62,10 @@ export function collection(data: DataValue[], itemKind: DataValueKind): DataValu
   return { kind: 'collection', data, itemKind };
 }
 
+export function schema(data: unknown): DataValue {
+  return { kind: 'schema', data };
+}
+
 export const void_: DataValue = { kind: 'void' };
 
 // Type guards
@@ -80,6 +87,10 @@ export function isCollection(v: DataValue): v is { kind: 'collection'; data: Dat
 
 export function isVoid(v: DataValue): v is { kind: 'void' } {
   return v.kind === 'void';
+}
+
+export function isSchema(v: DataValue): v is { kind: 'schema'; data: any } {
+  return v.kind === 'schema';
 }
 
 // Coercion helpers - convert between kinds when semantically safe

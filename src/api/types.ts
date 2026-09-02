@@ -83,9 +83,10 @@ export function storePlan(planId: string, graph: PipelineGraph, plan: PlanResult
   planStore.set(planId, { graph, plan, expiresAt: Date.now() + ttl })
   
   // Set timeout to clean up
-  setTimeout(() => {
+  const timeout = setTimeout(() => {
     planStore.delete(planId)
   }, ttl)
+  timeout.unref()
 }
 
 export function getPlan(planId: string): { graph: PipelineGraph; plan: PlanResult } | null {

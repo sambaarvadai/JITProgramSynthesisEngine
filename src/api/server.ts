@@ -5,6 +5,7 @@ import dotenv from 'dotenv'
 import { conversationRoutes } from './routes/conversations.js'
 import { executeRoutes, setServices } from './routes/execute.js'
 import { workspaceRoutes, setWorkspaceServices } from './routes/workspaces.js'
+import { knowledgeBuilderRoutes, setKnowledgeBuilderServices } from './routes/knowledge-builder.js'
 import { authRoutes } from './routes/auth.js'
 import { errorMiddleware } from './middleware/error.js'
 import { authMiddleware } from './middleware/auth.js'
@@ -30,6 +31,7 @@ app.use(authMiddleware)
 app.use('/api/conversations', conversationRoutes())
 app.use('/api/execute', executeRoutes())
 app.use('/api/workspaces', workspaceRoutes())
+app.use('/api/datasources', knowledgeBuilderRoutes())
 app.use(errorMiddleware)
 
 async function start() {
@@ -37,6 +39,7 @@ async function start() {
   const services = await bootstrap()
   setServices(services)
   setWorkspaceServices(services)
+  setKnowledgeBuilderServices(services)
 
   const PORT = process.env.API_PORT ?? 3001
   app.listen(PORT, () => {

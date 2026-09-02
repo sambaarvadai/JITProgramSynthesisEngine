@@ -22,20 +22,26 @@
     "calcite:dev": "npm run calcite:build && npm run calcite:start",
     "services:up": "docker compose up -d",
     "services:down": "docker compose down",
-    "mock:api": "npx tsx test/fixtures/mock-api/customer-enrichment-server.ts",
-    "test:http": "npx tsx test/fixtures/mock-api/http-node-integration-test.ts",
+    "mock:api": "npx tsx tests/fixtures/mock-api/customer-enrichment-server.ts",
+    "test:http": "npx tsx tests/fixtures/mock-api/http-node-integration-test.ts",
     "api": "tsx src/api/server.ts",
     "api:dev": "tsx watch src/api/server.ts",
     "ui:dev": "cd ui && npm run dev",
-    "test": "npx tsx --test src/**/*.test.ts",
-    "test:api": "npx tsx --test src/api/**/*.test.ts",
-    "test:watch": "npx tsx --test --watch src/**/*.test.ts"
+    "test": "npx tsx --test 'tests/unit/**/*.test.ts'",
+    "test:compiler": "npx tsx --test 'tests/compiler/query/query-pipeline.test.ts'",
+    "test:integration": "npx tsx --test 'tests/integration/session/**/*.test.ts'",
+    "test:api": "npx jest",
+    "test:watch": "npx tsx --test --watch 'tests/unit/**/*.test.ts'"
   },
   "jest": {
     "preset": "ts-jest/presets/default-esm",
     "testEnvironment": "node",
+    "roots": ["tests/integration/api"],
+    "testMatch": ["**/*.test.ts"],
     "moduleNameMapper": {
-      "^(\\.{1,2}/.*)\\.js$": "$1"
+      "^(\\.{1,2}/.*)\\.js$": "$1",
+      "^@/(.*)\\.js$": "<rootDir>/src/$1",
+      "^@/(.*)$": "<rootDir>/src/$1"
     },
     "transform": {
       "^.+\\.tsx?$": [

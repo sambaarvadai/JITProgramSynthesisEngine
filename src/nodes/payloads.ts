@@ -170,3 +170,22 @@ export type WritePayload = {
                                      // populated automatically during plan() validation when FK remapping applies
                                      // e.g. { order_id: 'id' } means "read 'id' from row, write as 'order_id'"
 };
+
+export type SchemaBuilderPayload = {
+  datasourceId: string;
+  refreshMode: 'full' | 'incremental';
+};
+
+export type OntologyBuilderPayload = {
+  datasourceIds: string[];
+};
+
+export type OntologyMapping = {
+  id: string;
+  sourceColumn: string;
+  targetColumn: string;
+  status: 'candidate' | 'confirmed' | 'rejected';
+  confidence: number;
+  basis: 'fk_registry' | 'name_heuristic' | 'llm_inferred';
+  reasoning?: string;
+};
