@@ -1,4 +1,7 @@
-// Ontology builder node — proposes column mappings across datasources/tables.
+// Semantic layer builder node — proposes column mappings across datasources/tables.
+// This builds the technical/column-level semantic layer the pipeline reads at query time.
+// It is not the future business-object / concept layer (Customer, Order, etc.), which is a
+// distinct, not-yet-built layer that may reference these mappings later but is out of scope here.
 // Produces candidates only; persisting confirmed mappings is out of scope.
 
 import crypto from 'crypto';
@@ -9,7 +12,7 @@ import { isSchema, isCollection, tabular } from '../core/types/data-value.js';
 import type { RowSchema } from '../core/types/schema.js';
 import type { ExecutionContext } from '../core/context/execution-context.js';
 import { validationOk, validationFail } from '../core/types/validation.js';
-import type { OntologyBuilderPayload, OntologyMapping } from './payloads.js';
+import type { SemanticLayerBuilderPayload, SemanticMapping } from './payloads.js';
 import { dataSourceRegistry } from '../storage/DataSourceRegistry.js';
 import { MODELS } from '../config/models.js';
 import type { BuiltSchema } from '../schema/SchemaBuilder.js';
@@ -203,7 +206,7 @@ function buildLLMPrompt(pairs: CandidatePair[]): string {
     nameTypeHeuristicScore: Number(heuristicScore.toFixed(3)),
   }));
 
-  return `You are an ontology-mapping assistant. You are given candidate column pairs (metadata only — no raw sample values).
+  return `You are a semantic-layer-mapping assistant. You are given candidate column pairs (metadata only — no raw sample values).
 Identify which pairs represent a foreign-key / reference relationship between the source column and the target column.
 
 Return a single JSON array. Each object must have these exact fields:
@@ -227,35 +230,35 @@ function parseLLMResponse(raw: string): Array<{ sourceColumn: string; targetColu
   const start = cleaned.indexOf('[');
   const end = cleaned.lastIndexOf(']');
   if (start === -1 || end === -1 || end <= start) {
-    console.warn('[OntologyBuilder] LLM response did not contain a JSON array');
+    console.warn('[SemanticLayerBuilder] LLM response did not contain a JSON array');
     return [];
   }
 
   try {
     return JSON.parse(cleaned.slice(start, end + 1)) as any[];
   } catch (err) {
-    console.warn('[OntologyBuilder] Failed to parse LLM JSON:', err);
+    console.warn('[SemanticLayerBuilder] Failed to parse LLM JSON:', err);
     return [];
   }
 }
 
-export function createOntologyBuilderNodeDefinition(
+export function createSemanticLayerBuilderNodeDefinition(
   client: Anthropic,
-): NodeDefinition<OntologyBuilderPayload, DataValue, DataValue> {
+): NodeDefinition<SemanticLayerBuilderPayload, DataValue, DataValue> {
   return {
-    kind: 'ontology-builder',
-    displayName: 'Ontology Builder',
+    kind: 'semantic-layer-builder',
+    displayName: 'Semantic Layer Builder',
     icon: '🕸️',
     color: '#10B981',
     inputPorts: [{ key: 'input', label: 'Schema', dataType: { kind: 'schema' }, required: true }],
     outputPorts: [{ key: 'output', label: 'Candidate Mappings', dataType: { kind: 'tabular' }, required: true }],
 
     validate(payload: unknown) {
-      const p = payload as OntologyBuilderPayload;
+      const p = payload as SemanticLayerBuilderPayload;
       const errors: Array<{ code: string; message: string }> = [];
 
       if (!p?.datasourceIds || !Array.isArray(p.datasourceIds) || p.datasourceIds.length === 0) {
-        errors.push({ code: 'MISSING_DATASOURCE_IDS', message: 'ontology-builder requires at least one datasourceId' });
+        errors.push({ code: 'MISSING_DATASOURCE_IDS', message: 'semantic-layer-builder requires at least one datasourceId' });
       } else {
         for (const id of p.datasourceIds) {
           if (typeof id !== 'string' || id.trim().length === 0) {
@@ -268,23 +271,23 @@ export function createOntologyBuilderNodeDefinition(
       return errors.length > 0 ? validationFail(errors) : validationOk();
     },
 
-    inferOutputType(_payload: OntologyBuilderPayload, _inputType: DataType): DataType {
+    inferOutputType(_payload: SemanticLayerBuilderPayload, _inputType: DataType): DataType {
       return { kind: 'tabular' };
     },
 
-    async execute(payload: OntologyBuilderPayload, input: DataValue, _ctx: ExecutionContext): Promise<DataValue> {
+    async execute(payload: SemanticLayerBuilderPayload, input: DataValue, _ctx: ExecutionContext): Promise<DataValue> {
       const schemas = extractSchemas(input).filter(s =>
         payload.datasourceIds.includes(s.datasourceId)
       );
 
       if (schemas.length === 0) {
         throw new Error(
-          `[OntologyBuilder] No schemas found for datasourceIds: ${payload.datasourceIds.join(', ')}`
+          `[SemanticLayerBuilder] No schemas found for datasourceIds: ${payload.datasourceIds.join(', ')}`
         );
       }
 
       const allColumns = buildColumnIndex(schemas);
-      const mappings = new Map<string, OntologyMapping>();
+      const mappings = new Map<string, SemanticMapping>();
 
       const llmCandidates: CandidatePair[] = [];
 
@@ -344,7 +347,7 @@ export function createOntologyBuilderNodeDefinition(
 
         const prompt = buildLLMPrompt(batch);
         const response = await client.messages.create({
-          model: MODELS.ONTOLOGY_BUILDER,
+          model: MODELS.SEMANTIC_LAYER_BUILDER,
           max_tokens: 2048,
           temperature: 0.2,
           messages: [{ role: 'user', content: prompt }],

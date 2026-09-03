@@ -45,7 +45,7 @@ export function knowledgeBuilderRoutes(deps?: KnowledgeBuilderRouteDeps): Router
       res.status(503).json({
         error: {
           code: 'LLM_UNAVAILABLE',
-          message: 'Ontology builder requires ANTHROPIC_API_KEY to be configured',
+          message: 'Semantic layer builder requires ANTHROPIC_API_KEY to be configured',
         },
       });
       return;
@@ -65,11 +65,11 @@ export function knowledgeBuilderRoutes(deps?: KnowledgeBuilderRouteDeps): Router
       const schemaPayload = { datasourceId, refreshMode: 'full' as const };
       const schemaResult = await schemaNode.execute(schemaPayload, void_, ctx);
 
-      const ontologyNode = nodeRegistry.get('ontology-builder');
-      const ontologyPayload = { datasourceIds: [datasourceId] };
-      const ontologyResult = await ontologyNode.execute(ontologyPayload, schemaResult, ctx);
+      const semanticLayerNode = nodeRegistry.get('semantic-layer-builder');
+      const semanticLayerPayload = { datasourceIds: [datasourceId] };
+      const semanticLayerResult = await semanticLayerNode.execute(semanticLayerPayload, schemaResult, ctx);
 
-      res.json({ mappings: ontologyResult.data.rows });
+      res.json({ mappings: semanticLayerResult.data.rows });
     } catch (error) {
       console.error('[API] Knowledge builder error:', error);
       res.status(500).json({

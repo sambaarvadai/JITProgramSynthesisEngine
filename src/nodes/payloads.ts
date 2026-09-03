@@ -176,11 +176,11 @@ export type SchemaBuilderPayload = {
   refreshMode: 'full' | 'incremental';
 };
 
-export type OntologyBuilderPayload = {
+export type SemanticLayerBuilderPayload = {
   datasourceIds: string[];
 };
 
-export type OntologyMapping = {
+export type SemanticMapping = {
   id: string;
   sourceColumn: string;
   targetColumn: string;

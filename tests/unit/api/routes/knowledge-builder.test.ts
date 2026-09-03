@@ -9,7 +9,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { NodeRegistry } from '@/core/registry/node-registry.js';
 import { schemaBuilderNodeDefinition } from '@/nodes/schema-builder-node.js';
-import { createOntologyBuilderNodeDefinition } from '@/nodes/ontology-builder-node.js';
+import { createSemanticLayerBuilderNodeDefinition } from '@/nodes/semantic-layer-builder-node.js';
 import { dataSourceRegistry } from '@/storage/DataSourceRegistry.js';
 import { buildSchemaFromSQL } from '@/schema/SchemaBuilder.js';
 import Anthropic from '@anthropic-ai/sdk';
@@ -97,7 +97,7 @@ describe('KnowledgeBuilderRoute', () => {
     const nodeRegistry = new NodeRegistry();
     const mockClient = makeMockAnthropic([]);
     nodeRegistry.register(schemaBuilderNodeDefinition);
-    nodeRegistry.register(createOntologyBuilderNodeDefinition(mockClient));
+    nodeRegistry.register(createSemanticLayerBuilderNodeDefinition(mockClient));
     const app = buildApp(nodeRegistry);
 
     const ds = uniqueName('svc');
@@ -117,7 +117,7 @@ describe('KnowledgeBuilderRoute', () => {
     const nodeRegistry = new NodeRegistry();
     const mockClient = makeMockAnthropic([]);
     nodeRegistry.register(schemaBuilderNodeDefinition);
-    nodeRegistry.register(createOntologyBuilderNodeDefinition(mockClient));
+    nodeRegistry.register(createSemanticLayerBuilderNodeDefinition(mockClient));
 
     const app = buildApp(nodeRegistry);
     const res = await request(app).post(`/api/datasources/${ds}/build-knowledge`);
@@ -134,7 +134,7 @@ describe('KnowledgeBuilderRoute', () => {
   test('returns 500 when datasource does not exist', async () => {
     const nodeRegistry = new NodeRegistry();
     nodeRegistry.register(schemaBuilderNodeDefinition);
-    nodeRegistry.register(createOntologyBuilderNodeDefinition(makeMockAnthropic([])));
+    nodeRegistry.register(createSemanticLayerBuilderNodeDefinition(makeMockAnthropic([])));
 
     const app = buildApp(nodeRegistry);
     const res = await request(app).post('/api/datasources/does-not-exist/build-knowledge');

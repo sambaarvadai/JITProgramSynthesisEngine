@@ -27,9 +27,9 @@ export const MODELS = {
     process.env.ANTHROPIC_LLM_NODE_MODEL ||
     'claude-sonnet-4-6',
 
-  // Ontology builder — runs infrequently during onboarding, so a stronger/slower model is fine
-  ONTOLOGY_BUILDER:
-    process.env.ANTHROPIC_ONTOLOGY_BUILDER_MODEL ||
+  // Semantic layer builder — runs infrequently during onboarding, so a stronger/slower model is fine
+  SEMANTIC_LAYER_BUILDER:
+    process.env.ANTHROPIC_SEMANTIC_LAYER_BUILDER_MODEL ||
     'claude-sonnet-4-6',
 } as const;
 

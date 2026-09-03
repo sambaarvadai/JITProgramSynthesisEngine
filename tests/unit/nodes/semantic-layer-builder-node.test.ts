@@ -1,9 +1,9 @@
-// Ontology-builder node tests
+// Semantic-layer-builder node tests
 
 import { test, describe } from 'node:test';
 import * as assert from 'node:assert';
 import Anthropic from '@anthropic-ai/sdk';
-import { createOntologyBuilderNodeDefinition } from '@/nodes/ontology-builder-node.js';
+import { createSemanticLayerBuilderNodeDefinition } from '@/nodes/semantic-layer-builder-node.js';
 import { dataSourceRegistry } from '@/storage/DataSourceRegistry.js';
 import { buildSchemaFromSQL } from '@/schema/SchemaBuilder.js';
 import { createExecutionContext } from '@/core/context/execution-context.js';
@@ -32,12 +32,12 @@ function buildSchemaArtifact(datasourceId: string, ddl: string) {
   });
 }
 
-describe('OntologyBuilderNode', () => {
+describe('SemanticLayerBuilderNode', () => {
   test('node definition shape', () => {
-    const node = createOntologyBuilderNodeDefinition(makeAnthropicClient([]));
+    const node = createSemanticLayerBuilderNodeDefinition(makeAnthropicClient([]));
 
-    assert.strictEqual(node.kind, 'ontology-builder');
-    assert.strictEqual(node.displayName, 'Ontology Builder');
+    assert.strictEqual(node.kind, 'semantic-layer-builder');
+    assert.strictEqual(node.displayName, 'Semantic Layer Builder');
     assert.strictEqual(node.inputPorts.length, 1);
     assert.strictEqual(node.inputPorts[0].key, 'input');
     assert.deepStrictEqual(node.inputPorts[0].dataType, { kind: 'schema' });
@@ -46,21 +46,21 @@ describe('OntologyBuilderNode', () => {
   });
 
   test('validation catches missing datasourceIds', () => {
-    const node = createOntologyBuilderNodeDefinition(makeAnthropicClient([]));
+    const node = createSemanticLayerBuilderNodeDefinition(makeAnthropicClient([]));
     const result = node.validate({} as any);
     assert.strictEqual(result.ok, false);
     assert.ok(result.errors.some((e) => e.code === 'MISSING_DATASOURCE_IDS'));
   });
 
   test('validation catches empty datasourceIds', () => {
-    const node = createOntologyBuilderNodeDefinition(makeAnthropicClient([]));
+    const node = createSemanticLayerBuilderNodeDefinition(makeAnthropicClient([]));
     const result = node.validate({ datasourceIds: [] });
     assert.strictEqual(result.ok, false);
     assert.ok(result.errors.some((e) => e.code === 'MISSING_DATASOURCE_IDS'));
   });
 
   test('validation passes for valid payload', () => {
-    const node = createOntologyBuilderNodeDefinition(makeAnthropicClient([]));
+    const node = createSemanticLayerBuilderNodeDefinition(makeAnthropicClient([]));
     const result = node.validate({ datasourceIds: ['a'] });
     assert.strictEqual(result.ok, true);
   });
@@ -89,7 +89,7 @@ describe('OntologyBuilderNode', () => {
       },
     ]);
 
-    const node = createOntologyBuilderNodeDefinition(makeAnthropicClient([]));
+    const node = createSemanticLayerBuilderNodeDefinition(makeAnthropicClient([]));
     const result = await node.execute(
       { datasourceIds: [sourceDs, targetDs] },
       collection([sourceSchema, targetSchema], 'schema'),
@@ -117,7 +117,7 @@ describe('OntologyBuilderNode', () => {
        CREATE TABLE customers (id SERIAL PRIMARY KEY, email VARCHAR(255));`,
     );
 
-    const node = createOntologyBuilderNodeDefinition(makeAnthropicClient([]));
+    const node = createSemanticLayerBuilderNodeDefinition(makeAnthropicClient([]));
     const result = await node.execute({ datasourceIds: [ds] }, input, ctx);
 
     assert.strictEqual(result.kind, 'tabular');
@@ -152,7 +152,7 @@ describe('OntologyBuilderNode', () => {
       },
     ]);
 
-    const node = createOntologyBuilderNodeDefinition(client);
+    const node = createSemanticLayerBuilderNodeDefinition(client);
     const result = await node.execute(
       { datasourceIds: [sourceDs, targetDs] },
       collection([sourceSchema, targetSchema], 'schema'),
@@ -178,7 +178,7 @@ describe('OntologyBuilderNode', () => {
        CREATE TABLE customers (id SERIAL PRIMARY KEY, email VARCHAR(255));`,
     );
 
-    const node = createOntologyBuilderNodeDefinition(makeAnthropicClient([]));
+    const node = createSemanticLayerBuilderNodeDefinition(makeAnthropicClient([]));
     const result = await node.execute({ datasourceIds: [ds] }, input, ctx);
 
     assert.strictEqual(result.kind, 'tabular');
@@ -192,7 +192,7 @@ describe('OntologyBuilderNode', () => {
     const ds = uniqueName('missing');
     const input = buildSchemaArtifact(ds, `CREATE TABLE orders (id SERIAL PRIMARY KEY);`);
 
-    const node = createOntologyBuilderNodeDefinition(makeAnthropicClient([]));
+    const node = createSemanticLayerBuilderNodeDefinition(makeAnthropicClient([]));
     await assert.rejects(
       () => node.execute({ datasourceIds: ['non-existent'] }, input, ctx),
       /No schemas found/,

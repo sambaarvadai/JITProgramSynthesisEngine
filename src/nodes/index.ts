@@ -13,7 +13,7 @@ export { createLLMNodeDefinition } from './definitions/llm-node.js';
 export { createHttpNodeDefinition } from './definitions/http-node.js';
 export { createWriteNodeDefinition } from './definitions/write-node.js';
 export { schemaBuilderNodeDefinition } from './schema-builder-node.js';
-export { createOntologyBuilderNodeDefinition } from './ontology-builder-node.js';
+export { createSemanticLayerBuilderNodeDefinition } from './semantic-layer-builder-node.js';
 export { conditionalNodeDefinition } from './definitions/conditional-node.js';
 export { mergeNodeDefinition } from './definitions/merge-node.js';
 export { parallelNodeDefinition } from './definitions/parallel-node.js';
@@ -27,7 +27,7 @@ import { createLLMNodeDefinition } from './definitions/llm-node.js';
 import { createHttpNodeDefinition } from './definitions/http-node.js';
 import { createWriteNodeDefinition } from './definitions/write-node.js';
 import { schemaBuilderNodeDefinition } from './schema-builder-node.js';
-import { createOntologyBuilderNodeDefinition } from './ontology-builder-node.js';
+import { createSemanticLayerBuilderNodeDefinition } from './semantic-layer-builder-node.js';
 import { conditionalNodeDefinition } from './definitions/conditional-node.js';
 import { mergeNodeDefinition } from './definitions/merge-node.js';
 import { parallelNodeDefinition } from './definitions/parallel-node.js';
@@ -56,7 +56,7 @@ export function registerAllNodes(
   if (deps?.anthropicApiKey) {
     const client = new Anthropic({ apiKey: deps.anthropicApiKey });
     registry.register(createLLMNodeDefinition(client));
-    registry.register(createOntologyBuilderNodeDefinition(client));
+    registry.register(createSemanticLayerBuilderNodeDefinition(client));
   } else {
     // Register a stub LLM node that throws an error
     registry.register({
@@ -73,18 +73,18 @@ export function registerAllNodes(
       },
     });
 
-    // Ontology builder also needs an LLM, so register a stub
+    // Semantic layer builder also needs an LLM, so register a stub
     registry.register({
-      kind: 'ontology-builder',
-      displayName: 'Ontology Builder',
+      kind: 'semantic-layer-builder',
+      displayName: 'Semantic Layer Builder',
       icon: '🕸️',
       color: '#10B981',
       inputPorts: [{ key: 'input', label: 'Schema', dataType: { kind: 'schema' }, required: true }],
       outputPorts: [{ key: 'output', label: 'Candidate Mappings', dataType: { kind: 'tabular' }, required: true }],
-      validate: () => validationFail([{ code: 'MISSING_API_KEY', message: 'OntologyBuilder requires anthropicApiKey' }]),
+      validate: () => validationFail([{ code: 'MISSING_API_KEY', message: 'SemanticLayerBuilder requires anthropicApiKey' }]),
       inferOutputType: () => ({ kind: 'tabular' }),
       execute: async () => {
-        throw new Error('OntologyBuilder requires anthropicApiKey to be provided');
+        throw new Error('SemanticLayerBuilder requires anthropicApiKey to be provided');
       },
     });
   }
